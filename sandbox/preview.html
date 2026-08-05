@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en" style="margin: 0; padding: 0; width: 100%; height: 100%">
+  <head>
+    <meta charset="UTF-8" />
+    <title>World preview sandbox</title>
+    <style>
+      /* The pane clips anything past its edges — this is what makes the game
+         box's 1px box-shadow border (set by the lab's COLORS message) show only
+         on the letterboxed sides: a side flush with the pane edge has its shadow
+         clipped away. */
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #101020;
+      }
+      /* The game box is sized purely by CSS to the largest square that fits the
+         pane, capped at native width and centered — so Phaser's FIT has nothing
+         to re-fit (no boot resize flash). The canvas fills it. These numbers are
+         the world's native resolution (src/runtime/viewport.ts); CSS cannot
+         import it, so this is the one copy that is kept in step by hand. */
+      #game {
+        width: min(100vw, 100vh);
+        max-width: 800px;
+        aspect-ratio: 1;
+      }
+      /* Cap the canvas to its box so the pre-FIT boot frame can't overflow. */
+      #game canvas {
+        display: block;
+        max-width: 100%;
+        max-height: 100%;
+      }
+      /* The game is focusable (PhaserBinding sets tabindex + targets its keyboard
+         here), so it only responds to keys while focused. Ring it whenever it is
+         focused — by click or tab — in the editor's teal (component-library
+         focus-styles), so "ring shown" reads as "key presses go to the game, not
+         the editor." Offset inward: the body clips anything past its edges, so an
+         outward ring would be cut. */
+      #game:focus {
+        outline: 2px solid #0093a4;
+        outline-offset: -2px;
+      }
+    </style>
+    <script type="module" crossorigin src="/world/assets/messages-zkrIxVlO.js"></script>
+    <script type="module" crossorigin src="/world/assets/preload-helper-CCWR2YR9.js"></script>
+    <script type="module" crossorigin src="/world/assets/entry-BPl7DTNC.js"></script>
+  </head>
+  <body>
+    <!--
+      The preview surface (specs/SANDBOX.md) — the VISIBLE game canvas host. It
+      imports the compiled module the transport service worker serves and runs
+      it. `entry.ts` reads the role from this page's filename.
+    -->
+    <div id="game"></div>
+  </body>
+</html>
