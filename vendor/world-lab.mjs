@@ -43,7 +43,7 @@ var Trait = class {
     return property;
   }
   /** Add an actor-scoped action (a mutator that returns nothing). */
-  addAction(id, apply, opts = {}) {
+  addAction(id, apply2, opts = {}) {
     if (this.frozen) {
       frozenError(this.id);
     }
@@ -52,7 +52,7 @@ var Trait = class {
       name: opts.name,
       ownerId: this.id,
       params: opts.params,
-      apply
+      apply: apply2
     };
     this.actions[id] = action;
     return action;
@@ -125,14 +125,14 @@ var RuleBuilder = class {
     return property;
   }
   /** Add a world-scoped action (a mutator invoked via `world.act`). */
-  addAction(id, apply, opts = {}) {
+  addAction(id, apply2, opts = {}) {
     this.assertMutable();
     const action = {
       id,
       name: opts.name,
       ownerId: this.id,
       params: opts.params,
-      apply
+      apply: apply2
     };
     this.actions[id] = action;
     return action;
@@ -182,6 +182,16 @@ var RuleBuilder = class {
   addStepAfter(id, anchor, run) {
     return this.registerStep(id, run, { kind: "after", anchor });
   }
+  /**
+   * Add a per-tick step that runs in a named moment of the frame
+   * (core/phases).
+   *
+   * What a rule says instead of naming a neighbour: gravity is a force, so it
+   * runs in `push`, and it need not know that Physics exists to say so.
+   */
+  addStepIn(id, phase, run) {
+    return this.registerStep(id, run, { kind: "phase", phase });
+  }
   registerStep(id, run, order) {
     this.assertMutable();
     const step = { id, ownerId: this.id, order, run };
@@ -211,215 +221,80 @@ var RuleBuilder = class {
   }
 };
 
-// src/engine/core/color.ts
-var clamp01 = (value) => Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
-function channels(value) {
-  if (Array.isArray(value)) {
-    const at = (index, fallback) => clamp01(Number(value[index] ?? fallback));
-    return [at(0, 0), at(1, 0), at(2, 0), at(3, 1)];
+// src/engine/core/Vector.ts
+var DEG_TO_RAD = Math.PI / 180;
+var Vector = class _Vector {
+  x;
+  y;
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
   }
-  const text = String(value ?? "").trim();
-  const short = /^#?([0-9a-f])([0-9a-f])([0-9a-f])([0-9a-f])?$/i.exec(text);
-  const long = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})?$/i.exec(text);
-  const match = short ?? long;
-  if (!match) {
-    return [0, 0, 0, 1];
+  /** Coerce a plain `{x, y}` (as learners write in defaults) to a Vector. */
+  static from(v) {
+    return v instanceof _Vector ? v : new _Vector(v.x, v.y);
   }
-  const byte = (part, fallback) => part === void 0 ? fallback : parseInt(short ? part + part : part, 16) / 255;
-  return [
-    byte(match[1], 0),
-    byte(match[2], 0),
-    byte(match[3], 0),
-    byte(match[4], 1)
-  ];
-}
-function rgb(value) {
-  const [r, g, b] = channels(value);
-  return [r, g, b];
-}
-function rgba(value) {
-  return channels(value);
-}
-function toHex(color) {
-  const channel = (index) => Math.round(clamp01(Number(color?.[index] ?? 0)) * 255).toString(16).padStart(2, "0");
-  return `#${channel(0)}${channel(1)}${channel(2)}`;
-}
-
-// src/engine/core/hash.ts
-function fnv1a(text) {
-  let value = 2166136261;
-  for (let index = 0; index < text.length; index++) {
-    value ^= text.charCodeAt(index);
-    value += (value << 1) + (value << 4) + (value << 7) + (value << 8) + (value << 24);
+  /** A number as a vector — both components alike. See {@link VectorOperand}. */
+  static broadcast(value) {
+    return typeof value === "number" ? new _Vector(value, value) : _Vector.from(value);
   }
-  return (value >>> 0).toString(36);
-}
-
-// src/engine/core/effectIds.ts
-function effectSlotId(owner, effect) {
-  return JSON.stringify([owner, effect.path]);
-}
-function effectContentHash(effect) {
-  return fnv1a(JSON.stringify(effect.document));
-}
-
-// src/engine/core/EventQueue.ts
-var EventQueue = class {
-  pending = [];
-  enqueue(event, actor, detail) {
-    this.pending.push({ event, actor, detail });
+  add(other) {
+    const v = _Vector.broadcast(other);
+    return new _Vector(this.x + v.x, this.y + v.y);
   }
-  size() {
-    return this.pending.length;
+  subtract(other) {
+    const v = _Vector.broadcast(other);
+    return new _Vector(this.x - v.x, this.y - v.y);
   }
-  /**
-   * Dispatch every queued event to the actors that elected to handle it. The
-   * queue is snapshotted and cleared first, so an event a handler raises lands
-   * in the now-empty queue and is dispatched on the next tick — bounding a tick
-   * to one round of handlers and avoiding an in-tick feedback loop.
-   */
-  flush(world) {
-    const batch = this.pending;
-    this.pending = [];
-    for (const { event, actor, detail } of batch) {
-      for (const handler of actor.handlersFor(event)) {
-        handler(world, actor, detail);
-      }
-    }
+  /** Component-wise product; a number multiplies both components. */
+  multiply(other) {
+    const v = _Vector.broadcast(other);
+    return new _Vector(this.x * v.x, this.y * v.y);
+  }
+  /** Component-wise quotient; a number divides both components. */
+  divide(other) {
+    const v = _Vector.broadcast(other);
+    return new _Vector(this.x / v.x, this.y / v.y);
+  }
+  /** Scale both components by a scalar — `multiply` with a number, named. */
+  scale(factor) {
+    return new _Vector(this.x * factor, this.y * factor);
+  }
+  /** Rotate clockwise by `degrees` (screen space: +y is down). */
+  rotate(degrees) {
+    const r = degrees * DEG_TO_RAD;
+    const cos = Math.cos(r);
+    const sin = Math.sin(r);
+    return new _Vector(this.x * cos - this.y * sin, this.x * sin + this.y * cos);
+  }
+  length() {
+    return Math.hypot(this.x, this.y);
+  }
+  equals(other) {
+    return this.x === other.x && this.y === other.y;
+  }
+  clone() {
+    return new _Vector(this.x, this.y);
   }
 };
 
-// src/engine/core/ruleIds.ts
-var placement = (order) => order.kind === "before" || order.kind === "after" ? `${order.kind} ${order.anchor.ownerId}.${order.anchor.id}` : order.kind;
-function codeOf(rule3) {
-  const parts = [];
-  const each2 = (record, write) => Object.keys(record).sort().forEach((key) => write(record[key]));
-  each2(
-    rule3.steps,
-    (step) => parts.push(`step ${step.id} ${placement(step.order)} ${step.run}`)
-  );
-  each2(
-    rule3.actions,
-    (action) => parts.push(`action ${action.id} ${action.apply}`)
-  );
-  each2(
-    rule3.queries,
-    (query) => parts.push(`query ${query.id} ${query.evaluate}`)
-  );
-  each2(rule3.traits, (trait) => {
-    each2(
-      trait.actions,
-      (action) => parts.push(`${trait.id} action ${action.id} ${action.apply}`)
-    );
-    each2(
-      trait.queries,
-      (query) => parts.push(`${trait.id} query ${query.id} ${query.evaluate}`)
-    );
-  });
-  return parts.join("\n");
-}
-function ruleContentHash(rule3) {
-  return fnv1a(codeOf(rule3));
-}
-
-// src/engine/core/Scheduler.ts
-var Scheduler = class {
-  ordered;
-  constructor(steps) {
-    this.ordered = topologicalOrder(steps);
-  }
-  /** Steps in resolved order — for inspection and tests. */
-  order() {
-    return this.ordered;
-  }
-  /** Run every step in order, once, for this tick. */
-  run(world, delta) {
-    for (const step of this.ordered) {
-      const run = step.run;
-      run(world, delta);
-    }
-  }
-};
-function topologicalOrder(steps) {
-  const index = /* @__PURE__ */ new Map();
-  steps.forEach((step, i) => index.set(step, i));
-  const after = /* @__PURE__ */ new Map();
-  const indegree = /* @__PURE__ */ new Map();
-  for (const step of steps) {
-    after.set(step, /* @__PURE__ */ new Set());
-    indegree.set(step, 0);
-  }
-  const addEdge = (from, to) => {
-    if (from === to) {
-      return;
-    }
-    const set = after.get(from);
-    if (set && !set.has(to)) {
-      set.add(to);
-      indegree.set(to, (indegree.get(to) ?? 0) + 1);
-    }
+// src/engine/core/Layer.ts
+var DEFAULT_LAYER_ID = "main";
+var emptySlot = () => ({
+  effects: [],
+  offset: new Vector(0, 0),
+  repeat: false
+});
+function makeLayer(init) {
+  return {
+    id: init.id,
+    name: init.name ?? init.id,
+    parallax: init.parallax ? Vector.from(init.parallax) : new Vector(1, 1),
+    fit: init.fit ?? false,
+    effects: [],
+    background: emptySlot(),
+    foreground: emptySlot()
   };
-  const firsts = steps.filter((s) => s.order.kind === "first");
-  const lasts = steps.filter((s) => s.order.kind === "last");
-  for (const step of steps) {
-    const { order } = step;
-    if (order.kind === "before") {
-      requireAnchor(step, order.anchor, index);
-      addEdge(step, order.anchor);
-    } else if (order.kind === "after") {
-      requireAnchor(step, order.anchor, index);
-      addEdge(order.anchor, step);
-    }
-  }
-  for (const f of firsts) {
-    for (const s of steps) {
-      if (s.order.kind !== "first") {
-        addEdge(f, s);
-      }
-    }
-  }
-  for (const l of lasts) {
-    for (const s of steps) {
-      if (s.order.kind !== "last") {
-        addEdge(s, l);
-      }
-    }
-  }
-  const ready = steps.filter((s) => (indegree.get(s) ?? 0) === 0).sort((a, b) => (index.get(a) ?? 0) - (index.get(b) ?? 0));
-  const result = [];
-  while (ready.length > 0) {
-    const step = ready.shift();
-    result.push(step);
-    const dependents = [...after.get(step) ?? []].sort(
-      (a, b) => (index.get(a) ?? 0) - (index.get(b) ?? 0)
-    );
-    for (const next of dependents) {
-      const d = (indegree.get(next) ?? 0) - 1;
-      indegree.set(next, d);
-      if (d === 0) {
-        const at = ready.findIndex(
-          (r) => (index.get(r) ?? 0) > (index.get(next) ?? 0)
-        );
-        if (at === -1) {
-          ready.push(next);
-        } else {
-          ready.splice(at, 0, next);
-        }
-      }
-    }
-  }
-  if (result.length !== steps.length) {
-    const cyclic = steps.filter((s) => !result.includes(s)).map((s) => `${s.ownerId}.${s.id}`).join(", ");
-    throw new Error(`Step ordering has a cycle among: ${cyclic}`);
-  }
-  return result;
-}
-function requireAnchor(step, anchor, index) {
-  if (!index.has(anchor)) {
-    throw new Error(
-      `Step '${step.ownerId}.${step.id}' is ordered relative to '${anchor.ownerId}.${anchor.id}', which is not active in this world (is its rule required?)`
-    );
-  }
 }
 
 // src/engine/core/spatialKeys.ts
@@ -521,66 +396,652 @@ var DependencySet = class {
   }
 };
 
-// src/engine/core/Vector.ts
-var DEG_TO_RAD = Math.PI / 180;
-var Vector = class _Vector {
-  x;
-  y;
-  constructor(x, y) {
-    this.x = x;
-    this.y = y;
+// src/engine/core/Traited.ts
+var coerce = (property, value) => {
+  if (property.type === "vector" || property.type === "point") {
+    return Vector.from(value);
   }
-  /** Coerce a plain `{x, y}` (as learners write in defaults) to a Vector. */
-  static from(v) {
-    return v instanceof _Vector ? v : new _Vector(v.x, v.y);
+  if (property.type === "actors" || property.type === "actor") {
+    const isActor = (candidate) => typeof candidate === "object" && candidate !== null && "traits" in candidate;
+    if (property.type === "actor") {
+      const one2 = Array.isArray(value) ? value[0] : value;
+      return isActor(one2) ? [one2] : [];
+    }
+    if (Array.isArray(value)) {
+      return [...value];
+    }
+    return isActor(value) ? [value] : [];
   }
-  /** A number as a vector — both components alike. See {@link VectorOperand}. */
-  static broadcast(value) {
-    return typeof value === "number" ? new _Vector(value, value) : _Vector.from(value);
+  return value;
+};
+var warned = /* @__PURE__ */ new Set();
+var isTrait = (trait, doing) => {
+  if (trait) {
+    return true;
   }
-  add(other) {
-    const v = _Vector.broadcast(other);
-    return new _Vector(this.x + v.x, this.y + v.y);
+  const message = `world-lab: ignored \u201C${doing}\u201D for a trait that does not exist. The rule that declared it may have been deleted or renamed \u2014 open the block and pick the trait again.`;
+  if (!warned.has(message)) {
+    warned.add(message);
+    console.warn(message);
   }
-  subtract(other) {
-    const v = _Vector.broadcast(other);
-    return new _Vector(this.x - v.x, this.y - v.y);
+  return false;
+};
+var Traited = class {
+  membership = new DependencySet(
+    (trait) => trait.requiredTraits,
+    (trait) => trait.id
+  );
+  store = /* @__PURE__ */ new Map();
+  /** What to call the holder in an error — `Actor 'coin'`, `Camera 'main'`. */
+  describe;
+  constructor(describe, traits, overrides = []) {
+    this.describe = describe;
+    for (const trait of traits) {
+      if (isTrait(trait, "use trait")) {
+        this.membership.add(trait);
+      }
+    }
+    for (const trait of this.membership.items()) {
+      for (const property of Object.values(trait.properties)) {
+        this.store.set(property, coerce(property, property.default));
+      }
+    }
+    for (const [property, value] of overrides) {
+      this.store.set(property, coerce(property, value));
+    }
   }
-  /** Component-wise product; a number multiplies both components. */
-  multiply(other) {
-    const v = _Vector.broadcast(other);
-    return new _Vector(this.x * v.x, this.y * v.y);
+  get(property) {
+    if (!this.store.has(property)) {
+      throw new Error(
+        `${this.describe} has no property '${property.id}' ` + (property.ownerKind === "actor" ? `(declared by the actor '${property.ownerId}' \u2014 is this one of those?)` : `(is trait '${property.ownerId}' applied?)`)
+      );
+    }
+    return this.store.get(property);
   }
-  /** Component-wise quotient; a number divides both components. */
-  divide(other) {
-    const v = _Vector.broadcast(other);
-    return new _Vector(this.x / v.x, this.y / v.y);
+  set(property, value) {
+    this.store.set(property, coerce(property, value));
   }
-  /** Scale both components by a scalar — `multiply` with a number, named. */
-  scale(factor) {
-    return new _Vector(this.x * factor, this.y * factor);
+  /** Whether the slot exists at all — distinct from what is in it. */
+  hasProperty(property) {
+    return this.store.has(property);
   }
-  /** Rotate clockwise by `degrees` (screen space: +y is down). */
-  rotate(degrees) {
-    const r = degrees * DEG_TO_RAD;
-    const cos = Math.cos(r);
-    const sin = Math.sin(r);
-    return new _Vector(this.x * cos - this.y * sin, this.x * sin + this.y * cos);
+  /** Whether this holds the trait, directly or by dependency. */
+  has(trait) {
+    return isTrait(trait, "has trait") && this.membership.has(trait);
   }
-  length() {
-    return Math.hypot(this.x, this.y);
+  /**
+   * Elect a trait after the fact, with the slots it brings.
+   *
+   * Slots that already exist keep their values, which is what makes this the
+   * inverse of {@link removeTrait} rather than a reset: take a trait away and
+   * put it back and the actor picks up where it left off. Only a property with
+   * no slot at all is seeded, and its default is the seed — the constructor's
+   * overrides were a fact about how this actor was BUILT, and there is nothing
+   * to apply them to a second time.
+   */
+  addTrait(trait) {
+    if (!isTrait(trait, "add trait")) {
+      return;
+    }
+    this.membership.add(trait);
+    for (const present of this.membership.items()) {
+      for (const property of Object.values(present.properties)) {
+        if (!this.store.has(property)) {
+          this.store.set(property, coerce(property, property.default));
+        }
+      }
+    }
   }
-  equals(other) {
-    return this.x === other.x && this.y === other.y;
+  /**
+   * Drop a trait. Its steps stop running for this holder from the next frame —
+   * `World.actors.with` re-filters every frame, so there is no list to update.
+   *
+   * THE SLOTS STAY. A property is read by anything holding a reference to it,
+   * not only by the trait that declared it, so removing them would turn "this
+   * camera stopped following" into a crash somewhere unrelated the next time
+   * anything read the property. Keeping them also makes off-and-on preserve
+   * state, which is what a toggle means. `hasProperty` is the question to ask
+   * about a slot; `has` is the question about the trait.
+   *
+   * A trait that is only here because something else REQUIRES it does not go —
+   * the count says so, and `DependencySet.remove` ignores a trait that was
+   * never explicitly elected. That is silent by design: it is the same answer
+   * as removing a trait the holder never had, and neither is worth stopping a
+   * game over.
+   */
+  removeTrait(trait) {
+    if (!isTrait(trait, "remove trait")) {
+      return;
+    }
+    this.membership.remove(trait);
   }
-  clone() {
-    return new _Vector(this.x, this.y);
+  /** The traits in play, dependencies included. */
+  traits() {
+    return this.membership.items();
   }
 };
 
+// src/engine/core/viewport.ts
+var TILE_SIZE = 32;
+var VIEWPORT_TILES = 10;
+var VIEWPORT_WIDTH = VIEWPORT_TILES * TILE_SIZE;
+var VIEWPORT_HEIGHT = VIEWPORT_TILES * TILE_SIZE;
+
+// src/engine/core/Camera.ts
+var DEFAULT_CAMERA_ID = "main";
+var RESTING_POSITION = () => new Vector(VIEWPORT_WIDTH / 2, VIEWPORT_HEIGHT / 2);
+var isPosition = (property) => property.ownerId === SPATIAL.trait && property.id === SPATIAL.position;
+var Camera = class {
+  /**
+   * The world this camera is in, set when the world takes it.
+   *
+   * The same back-reference an Actor carries, for the same reason: a
+   * camera-scoped body is invoked as `(camera, …args)` — the engine has no
+   * world to hand it — and a body like "follow the player" is a question about
+   * the world asked of a camera. The generated preamble binds `const world =
+   * camera.world`, exactly as an actor's binds it from the actor.
+   */
+  world;
+  id;
+  name;
+  /** Mutable: moving the camera is the whole point of having one. */
+  position;
+  traited;
+  constructor(init) {
+    this.id = init.id;
+    this.name = init.name ?? init.id;
+    this.position = init.position ? new Vector(init.position.x, init.position.y) : RESTING_POSITION();
+    this.traited = new Traited(
+      `Camera '${init.id}'`,
+      init.traits ?? [],
+      init.overrides ?? []
+    );
+  }
+  /** Whether this camera has the given trait, directly or by dependency. */
+  has(trait) {
+    return this.traited.has(trait);
+  }
+  /**
+   * Elect a trait while the game runs, or drop one — see `core/Traited`, which
+   * owns both and explains why a dropped trait leaves its properties behind.
+   *
+   * Returns `this` so a step can chain, matching `set` and `addEffect`.
+   */
+  addTrait(trait) {
+    this.traited.addTrait(trait);
+    return this;
+  }
+  removeTrait(trait) {
+    this.traited.removeTrait(trait);
+    return this;
+  }
+  /** The traits in play on it, dependencies included. */
+  traits() {
+    return this.traited.traits();
+  }
+  get(property) {
+    if (isPosition(property)) {
+      return this.position;
+    }
+    return this.traited.get(property);
+  }
+  /** Set a property; returns `this` so setup can chain, as an actor's does. */
+  set(property, value) {
+    if (isPosition(property)) {
+      const to = value;
+      this.position = new Vector(to.x, to.y);
+      return this;
+    }
+    this.traited.set(property, value);
+    return this;
+  }
+  /** Whether the slot exists at all — distinct from what is in it. */
+  hasProperty(property) {
+    return isPosition(property) || this.traited.hasProperty(property);
+  }
+};
+function makeCamera(init) {
+  return new Camera(init);
+}
+
+// src/engine/core/color.ts
+var clamp01 = (value) => Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+function channels(value) {
+  if (Array.isArray(value)) {
+    const at = (index, fallback) => clamp01(Number(value[index] ?? fallback));
+    return [at(0, 0), at(1, 0), at(2, 0), at(3, 1)];
+  }
+  const text = String(value ?? "").trim();
+  const short = /^#?([0-9a-f])([0-9a-f])([0-9a-f])([0-9a-f])?$/i.exec(text);
+  const long = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})?$/i.exec(text);
+  const match = short ?? long;
+  if (!match) {
+    return [0, 0, 0, 1];
+  }
+  const byte = (part, fallback) => part === void 0 ? fallback : parseInt(short ? part + part : part, 16) / 255;
+  return [
+    byte(match[1], 0),
+    byte(match[2], 0),
+    byte(match[3], 0),
+    byte(match[4], 1)
+  ];
+}
+function rgb(value) {
+  const [r, g, b] = channels(value);
+  return [r, g, b];
+}
+function rgba(value) {
+  return channels(value);
+}
+function toHex(color) {
+  const channel = (index) => Math.round(clamp01(Number(color?.[index] ?? 0)) * 255).toString(16).padStart(2, "0");
+  return `#${channel(0)}${channel(1)}${channel(2)}`;
+}
+
+// src/engine/core/hash.ts
+function fnv1a(text) {
+  let value = 2166136261;
+  for (let index = 0; index < text.length; index++) {
+    value ^= text.charCodeAt(index);
+    value += (value << 1) + (value << 4) + (value << 7) + (value << 8) + (value << 24);
+  }
+  return (value >>> 0).toString(36);
+}
+
+// src/engine/core/drawing.ts
+var TEXT_ANCHORS = [
+  "top left",
+  "top",
+  "top right",
+  "left",
+  "centre",
+  "right",
+  "bottom left",
+  "bottom",
+  "bottom right"
+];
+var DEFAULT_FILL = "#ffffff";
+var CommandPen = class {
+  commands = [];
+  currentFill = DEFAULT_FILL;
+  currentStroke = void 0;
+  currentWidth = 1;
+  paint() {
+    return {
+      ...this.currentFill === void 0 ? {} : { fill: this.currentFill },
+      ...this.currentStroke === void 0 ? {} : { stroke: this.currentStroke },
+      strokeWidth: this.currentWidth
+    };
+  }
+  fill(color) {
+    this.currentFill = color;
+  }
+  outline(color, width) {
+    this.currentStroke = color;
+    this.currentWidth = width;
+  }
+  noFill() {
+    this.currentFill = void 0;
+  }
+  noOutline() {
+    this.currentStroke = void 0;
+  }
+  rectangle(x, y, width, height) {
+    this.commands.push({ op: "rectangle", x, y, width, height, ...this.paint() });
+  }
+  circle(x, y, radius) {
+    this.commands.push({ op: "circle", x, y, radius, ...this.paint() });
+  }
+  /**
+   * A line is drawn in the outline colour, FALLING BACK TO THE FILL.
+   *
+   * A line has no interior, so "the colour" is the only paint it can mean. The
+   * fallback is the whole of what stops the commonest first drawing anybody
+   * writes — `draw line`, with the pen untouched — from producing nothing at
+   * all and no way to find out why.
+   */
+  line(x1, y1, x2, y2) {
+    const paint = this.paint();
+    this.commands.push({
+      op: "line",
+      x1,
+      y1,
+      x2,
+      y2,
+      strokeWidth: paint.strokeWidth,
+      ...paint.stroke === void 0 ? paint.fill === void 0 ? {} : { stroke: paint.fill } : { stroke: paint.stroke }
+    });
+  }
+  text(text, x, y, size, anchor) {
+    this.commands.push({ op: "text", text, x, y, size, anchor, ...this.paint() });
+  }
+  image(sprite, x, y, cell) {
+    this.commands.push({ op: "image", sprite, x, y, ...cell ? { cell } : {} });
+  }
+};
+function drawingKey(width, height, commands) {
+  return fnv1a(`${width}x${height}:${JSON.stringify(commands)}`);
+}
+
+// src/engine/core/effectIds.ts
+function effectSlotId(owner, effect) {
+  return JSON.stringify([owner, effect.path]);
+}
+function effectContentHash(effect) {
+  return fnv1a(JSON.stringify(effect.document));
+}
+
+// src/engine/core/EventQueue.ts
+var EventQueue = class {
+  pending = [];
+  enqueue(event, actor, detail) {
+    this.pending.push({ event, actor, detail });
+  }
+  /**
+   * Whether this exact event is already queued for this actor.
+   *
+   * So a caller can raise something AT MOST ONCE a tick without keeping a flag
+   * of its own: the queue is cleared on flush, so "already pending" and "already
+   * raised this tick" are the same question.
+   */
+  isPending(event, actor) {
+    return this.pending.some(
+      (queued) => queued.event === event && queued.actor === actor
+    );
+  }
+  size() {
+    return this.pending.length;
+  }
+  /**
+   * Dispatch every queued event to whatever elected to handle it — the actor
+   * it happened to, or the world when it happened to nobody in particular. The
+   * queue is snapshotted and cleared first, so an event a handler raises lands
+   * in the now-empty queue and is dispatched on the next tick — bounding a tick
+   * to one round of handlers and avoiding an in-tick feedback loop.
+   */
+  flush(world) {
+    const batch = this.pending;
+    this.pending = [];
+    for (const { event, actor, detail } of batch) {
+      if (!actor) {
+        for (const handler of world.handlersFor(event)) {
+          handler(world, detail);
+        }
+        continue;
+      }
+      for (const handler of actor.handlersFor(event)) {
+        handler(world, actor, detail);
+      }
+    }
+  }
+};
+
+// src/engine/core/ruleIds.ts
+var placement = (order) => order.kind === "before" || order.kind === "after" ? `${order.kind} ${order.anchor.ownerId}.${order.anchor.id}` : order.kind;
+function codeOf(rule3) {
+  const parts = [];
+  const each2 = (record, write) => Object.keys(record).sort().forEach((key) => write(record[key]));
+  each2(
+    rule3.steps,
+    (step) => parts.push(`step ${step.id} ${placement(step.order)} ${step.run}`)
+  );
+  each2(
+    rule3.actions,
+    (action) => parts.push(`action ${action.id} ${action.apply}`)
+  );
+  each2(
+    rule3.queries,
+    (query) => parts.push(`query ${query.id} ${query.evaluate}`)
+  );
+  each2(rule3.traits, (trait) => {
+    each2(
+      trait.actions,
+      (action) => parts.push(`${trait.id} action ${action.id} ${action.apply}`)
+    );
+    each2(
+      trait.queries,
+      (query) => parts.push(`${trait.id} query ${query.id} ${query.evaluate}`)
+    );
+  });
+  return parts.join("\n");
+}
+function ruleContentHash(rule3) {
+  return fnv1a(codeOf(rule3));
+}
+
+// src/engine/core/phases.ts
+var PHASES = [
+  {
+    id: "sense",
+    name: "sense",
+    subject: "world",
+    summary: "Read the outside world \u2014 keys, pointer, timers."
+  },
+  {
+    id: "decide",
+    name: "decide",
+    subject: "actor",
+    summary: "Turn intent into motion: what the player asked for, what an enemy chose."
+  },
+  {
+    id: "push",
+    name: "push",
+    subject: "actor",
+    summary: "Add forces to velocity \u2014 gravity, wind, a magnet."
+  },
+  {
+    id: "move",
+    name: "move",
+    subject: "actor",
+    summary: "Turn velocity into position."
+  },
+  {
+    id: "adjust",
+    name: "adjust",
+    subject: "actor",
+    summary: "Correct a position after moving \u2014 wrap at the edges, clamp to the map, snap to a grid."
+  },
+  {
+    id: "touch",
+    name: "touch",
+    subject: "actor",
+    summary: "Work out what is against what."
+  },
+  {
+    id: "settle",
+    name: "settle",
+    subject: "actor",
+    summary: "Push overlapping bodies apart."
+  },
+  {
+    id: "react",
+    name: "react",
+    subject: "actor",
+    summary: "Respond to what happened \u2014 landing, damage, scoring, which animation to play."
+  },
+  {
+    id: "choose",
+    name: "choose the camera",
+    subject: "camera",
+    summary: "Decide which camera the view is taken through."
+  },
+  {
+    id: "aim",
+    name: "aim",
+    subject: "camera",
+    summary: "Choose where the camera wants to look."
+  },
+  {
+    id: "steady",
+    name: "steady the aim",
+    subject: "camera",
+    summary: "Adjust WHERE it is looking before deciding how fast to get there \u2014 a deadzone the subject may move inside, or leading where it is going."
+  },
+  {
+    id: "smooth",
+    name: "smooth",
+    subject: "camera",
+    summary: "Soften the approach \u2014 how much of the way to travel this frame."
+  },
+  {
+    id: "confine",
+    name: "confine",
+    subject: "camera",
+    summary: "Keep the view somewhere legal \u2014 inside the map, on one axis."
+  },
+  {
+    id: "view",
+    name: "take the view",
+    subject: "camera",
+    summary: "Commit the choice: the camera moves to where it decided to look."
+  }
+];
+var INDEX = new Map(PHASES.map((phase, at) => [phase.id, at]));
+var phaseIndex = (id) => INDEX.get(id);
+
+// src/engine/core/Scheduler.ts
+var Scheduler = class {
+  ordered;
+  constructor(steps) {
+    this.ordered = topologicalOrder(steps);
+  }
+  /** Steps in resolved order — for inspection and tests. */
+  order() {
+    return this.ordered;
+  }
+  /** Run every step in order, once, for this tick. */
+  run(world, delta) {
+    for (const step of this.ordered) {
+      const run = step.run;
+      run(world, delta);
+    }
+  }
+};
+function topologicalOrder(steps) {
+  const index = /* @__PURE__ */ new Map();
+  steps.forEach((step, i) => index.set(step, i));
+  const after = /* @__PURE__ */ new Map();
+  const indegree = /* @__PURE__ */ new Map();
+  for (const step of steps) {
+    after.set(step, /* @__PURE__ */ new Set());
+    indegree.set(step, 0);
+  }
+  const addEdge = (from, to) => {
+    if (from === to) {
+      return;
+    }
+    const set = after.get(from);
+    if (set && !set.has(to)) {
+      set.add(to);
+      indegree.set(to, (indegree.get(to) ?? 0) + 1);
+    }
+  };
+  const byPhase = /* @__PURE__ */ new Map();
+  for (const step of steps) {
+    if (step.order.kind !== "phase") {
+      continue;
+    }
+    const at = phaseIndex(step.order.phase);
+    if (at === void 0) {
+      continue;
+    }
+    const group = byPhase.get(at) ?? [];
+    byPhase.set(at, group);
+    group.push(step);
+  }
+  const populated = [...byPhase.keys()].sort((a, b) => a - b);
+  for (let i = 1; i < populated.length; i++) {
+    for (const earlier of byPhase.get(populated[i - 1]) ?? []) {
+      for (const later of byPhase.get(populated[i]) ?? []) {
+        addEdge(earlier, later);
+      }
+    }
+  }
+  const firsts = steps.filter((s) => s.order.kind === "first");
+  const lasts = steps.filter((s) => s.order.kind === "last");
+  for (const step of steps) {
+    const { order } = step;
+    if (order.kind === "before") {
+      requireAnchor(step, order.anchor, index);
+      addEdge(step, order.anchor);
+    } else if (order.kind === "after") {
+      requireAnchor(step, order.anchor, index);
+      addEdge(order.anchor, step);
+    }
+  }
+  for (const f of firsts) {
+    for (const s of steps) {
+      if (s.order.kind !== "first") {
+        addEdge(f, s);
+      }
+    }
+  }
+  for (const l of lasts) {
+    for (const s of steps) {
+      if (s.order.kind !== "last") {
+        addEdge(s, l);
+      }
+    }
+  }
+  const ready = steps.filter((s) => (indegree.get(s) ?? 0) === 0).sort((a, b) => (index.get(a) ?? 0) - (index.get(b) ?? 0));
+  const result = [];
+  while (ready.length > 0) {
+    const step = ready.shift();
+    result.push(step);
+    const dependents = [...after.get(step) ?? []].sort(
+      (a, b) => (index.get(a) ?? 0) - (index.get(b) ?? 0)
+    );
+    for (const next of dependents) {
+      const d = (indegree.get(next) ?? 0) - 1;
+      indegree.set(next, d);
+      if (d === 0) {
+        const at = ready.findIndex(
+          (r) => (index.get(r) ?? 0) > (index.get(next) ?? 0)
+        );
+        if (at === -1) {
+          ready.push(next);
+        } else {
+          ready.splice(at, 0, next);
+        }
+      }
+    }
+  }
+  if (result.length !== steps.length) {
+    const cyclic = steps.filter((s) => !result.includes(s)).map((s) => `${s.ownerId}.${s.id}`).join(", ");
+    throw new Error(`Step ordering has a cycle among: ${cyclic}`);
+  }
+  return result;
+}
+function requireAnchor(step, anchor, index) {
+  if (!index.has(anchor)) {
+    throw new Error(
+      `Step '${step.ownerId}.${step.id}' is ordered relative to '${anchor.ownerId}.${anchor.id}', which is not active in this world (is its rule required?)`
+    );
+  }
+}
+
 // src/engine/core/World.ts
+var slotValues = (layer, slot) => ({
+  layer,
+  ...slot.sprite === void 0 ? {} : { sprite: slot.sprite },
+  offset: { x: slot.offset.x, y: slot.offset.y },
+  repeat: slot.repeat
+});
 var DEFAULT_BACKDROP_COLOR = "#101020";
-var coerce = (property, value) => property.type === "vector" || property.type === "point" ? Vector.from(value) : value;
+var coerce2 = (property, value) => property.type === "vector" || property.type === "point" ? Vector.from(value) : value;
+var CameraCollection = class {
+  list;
+  constructor(list) {
+    this.list = list;
+  }
+  /** Every camera with a trait — a copy, so a body may add one while walking. */
+  with(trait) {
+    return this.list.filter((camera) => camera.has(trait));
+  }
+  [Symbol.iterator]() {
+    return this.list[Symbol.iterator]();
+  }
+};
 var ActorCollection = class {
   list;
   constructor(list) {
@@ -600,6 +1061,17 @@ var ActorCollection = class {
   ofType(type) {
     return this.list.filter((actor) => actor.type === type);
   }
+  /**
+   * Every actor drawn in a layer.
+   *
+   * A copy, like `ofType`, because a source is read once at the top of a loop —
+   * a rule that adds actors while iterating them terminates. An unknown id
+   * gives none rather than throwing, for the reason `addActor` gives about ids
+   * that come from generated code naming a block.
+   */
+  inLayer(layer) {
+    return this.list.filter((actor) => actor.layer === layer);
+  }
   [Symbol.iterator]() {
     return this.list[Symbol.iterator]();
   }
@@ -614,18 +1086,82 @@ var World = class {
   );
   store = /* @__PURE__ */ new Map();
   actorList = [];
+  // Not readonly: an actor KIND can contribute per-frame steps of its own, and
+  // a kind is not known until one of its actors is placed (`useActorKind`).
   scheduler;
+  // Every step the world runs, rules' and actor kinds' alike, in the order they
+  // were contributed — kept so a kind arriving later can be folded in without
+  // asking the rules again.
+  stepList = [];
+  // Which actor kinds have already contributed, by the TYPE they were placed
+  // under: a kind contributes once however many of it there are.
+  kindsWithSteps = /* @__PURE__ */ new Set();
+  /** How each kind that describes its own picture draws itself, by type. */
+  kindDrawings = /* @__PURE__ */ new Map();
+  /** The properties this world declared for itself — see `defineOwnProperty`. */
+  ownProperties = [];
   events = new EventQueue();
+  /**
+   * Handlers for the world's own events, by event.
+   *
+   * On the World rather than on some actor standing in for it. `rules/input`
+   * used to raise its key events once per actor per frame purely to have a
+   * subject, and every `.actor` that cared had to register on itself.
+   */
+  worldHandlers = /* @__PURE__ */ new Map();
+  /**
+   * How big the world is; see `mapBounds`. One screen until a map is loaded.
+   *
+   * A VECTOR, not a `{width, height}`. The blocks that report it are typed
+   * `Vector`, and every block that takes one apart reads `.x`/`.y` — so a pair
+   * named the other way is a value whose own type is a lie about it, and the
+   * failure is silent: `x of ⟨map size⟩` is `undefined`, the arithmetic around
+   * it is NaN, and nothing throws.
+   */
+  bounds = new Vector(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+  // Game seconds since the first tick — see `time`. Advanced by `tick` and by
+  // nothing else, so a world nobody ticks stays at zero however long it exists.
+  elapsed = 0;
   // Animations known to this world, by id — seeded from the active rules' stock
   // animations. The Animation rule's step and renderSnapshot resolve ids here.
   animationDefs = /* @__PURE__ */ new Map();
+  /**
+   * How big each of the project's images is, by file name.
+   *
+   * A fact about a file, not about any actor — which is why the world holds it
+   * rather than an actor doing: two actors wearing one picture are the same
+   * size, and neither of them is where that is written down.
+   *
+   * Here so a SINGLE-IMAGE actor can have an intrinsic size at all. The
+   * Animation rule publishes one from a spritesheet's cells, and a plain
+   * picture has no cells — so before this, everything not animated measured
+   * zero, and every rule that asks how big an actor is fell back to a guess.
+   */
+  imageSizes = /* @__PURE__ */ new Map();
   // Effects played across the whole viewport, not on any one actor. Mutable for
   // the same reason an actor's list is: the driver re-reads it every frame.
   appliedEffects;
-  // Backdrop layers, back to front. Never empty: layer 0 is what every
-  // background block addresses, and a world that was told nothing about its
-  // background still has one, in the default colour.
-  backdropList;
+  // The one colour behind everything. World-scoped, not per layer: a colour on
+  // any layer but the bottom is behind the layer under it and can never be
+  // seen, so there is one sky (BACKGROUNDS.md).
+  clearColor;
+  // The layers actors are drawn in, back to front. Never empty: index 0 is the
+  // default, which is where an actor placed without being told a layer goes.
+  layerList;
+  // The cameras, and the default among them. Never empty, for the reason the
+  // layer list is not: a view taken through no camera would be a second kind of
+  // view, and every question about the view would have to answer twice.
+  cameraList;
+  // Which camera the view is taken through. One today, because a VIEWPORT is
+  // what would give a layer a different one and viewports are not built — so
+  // this is the default viewport's camera by another name, and generalises to
+  // that rather than being replaced by it.
+  activeCameraId = DEFAULT_CAMERA_ID;
+  cameraCollection;
+  // Layer id -> its index, which is its depth. Built once; layers cannot be
+  // added or removed while the world runs (they are structural — a layer cannot
+  // be spliced into a live scene graph, see `snapshot`).
+  layerIndex = /* @__PURE__ */ new Map();
   // The set of currently-pressed input keys, refreshed by the driver each frame
   // before `tick` (the engine is DOM-free, so input arrives as plain data).
   // Rule steps read it through `isKeyDown`; keys carry OUR names — 'left arrow',
@@ -635,6 +1171,16 @@ var World = class {
   // edges (a key *just* pressed or released) rather than only the held state.
   // Advanced at the end of each `tick`.
   previousKeys = /* @__PURE__ */ new Set();
+  // The mouse, on the same terms: held buttons, the previous tick's for edges,
+  // and where the pointer is. Buttons carry OUR names — 'left', 'middle',
+  // 'right' (core/pointer).
+  buttons = /* @__PURE__ */ new Set();
+  previousButtons = /* @__PURE__ */ new Set();
+  // IN VIEWPORT PIXELS, measured from the top left of the window onto the
+  // world — which is what the driver can actually report, since that is where
+  // the pointer is. Turning it into a place in the WORLD needs the camera, and
+  // the camera is here (`mousePosition`).
+  pointer = new Vector(0, 0);
   constructor(init) {
     this.id = init.id;
     this.name = init.name;
@@ -645,11 +1191,11 @@ var World = class {
     const rules = this.membership.items();
     for (const rule3 of rules) {
       for (const property of Object.values(rule3.properties)) {
-        this.store.set(property, coerce(property, property.default));
+        this.store.set(property, coerce2(property, property.default));
       }
     }
-    for (const [property, value] of init.overrides) {
-      this.store.set(property, coerce(property, value));
+    for (const property of init.ownProperties ?? []) {
+      this.defineOwnProperty(property, property.default);
     }
     for (const rule3 of rules) {
       for (const [id, def] of Object.entries(rule3.animations)) {
@@ -659,23 +1205,24 @@ var World = class {
     for (const [id, def] of init.animations ?? []) {
       this.animationDefs.set(id, def);
     }
-    this.appliedEffects = init.effects ? [...init.effects] : [];
-    this.backdropList = (init.backdrops ?? []).map((backdrop) => ({
-      ...backdrop,
-      color: [...backdrop.color],
-      effects: [...backdrop.effects]
-    }));
-    if (this.backdropList.length === 0) {
-      this.backdropList.push({
-        color: rgba(DEFAULT_BACKDROP_COLOR),
-        effects: []
-      });
+    this.appliedEffects = [];
+    this.clearColor = rgba(DEFAULT_BACKDROP_COLOR);
+    this.layerList = (init.layers ?? []).map(makeLayer);
+    if (!this.layerList.some((layer) => layer.id === DEFAULT_LAYER_ID)) {
+      this.layerList.unshift(makeLayer({ id: DEFAULT_LAYER_ID }));
     }
-    const steps = [];
+    this.layerList.forEach(
+      (layer, index) => this.layerIndex.set(layer.id, index)
+    );
+    this.cameraList = [makeCamera({ id: DEFAULT_CAMERA_ID })];
+    this.cameraCollection = new CameraCollection(this.cameraList);
+    for (const camera of this.cameraList) {
+      camera.world = this;
+    }
     for (const rule3 of rules) {
-      steps.push(...Object.values(rule3.steps));
+      this.stepList.push(...Object.values(rule3.steps));
     }
-    this.scheduler = new Scheduler(steps);
+    this.scheduler = new Scheduler(this.stepList);
   }
   get(property) {
     if (!this.store.has(property)) {
@@ -686,7 +1233,26 @@ var World = class {
     return this.store.get(property);
   }
   set(property, value) {
-    this.store.set(property, coerce(property, value));
+    this.store.set(property, coerce2(property, value));
+  }
+  /**
+   * Give the world a slot for a property no rule declared.
+   *
+   * The world's counterpart to the overrides an Actor is built with, and the
+   * whole of what `WorldBuilder.defineProperty` needs from here: `get` and
+   * `set` already take any property, and the only thing they insist on is that
+   * the slot exists.
+   *
+   * Idempotent-by-overwrite on purpose. A world module declares its properties
+   * as it loads, and a hot reload replays that module against a world that may
+   * already be running; re-seeding a slot to the value the file now states is
+   * what "the default changed" should mean.
+   */
+  defineOwnProperty(property, value) {
+    if (!this.store.has(property)) {
+      this.ownProperties.push(property);
+    }
+    this.store.set(property, coerce2(property, value));
   }
   act(action, ...args) {
     action.apply(this, ...args);
@@ -702,9 +1268,218 @@ var World = class {
   leaving = /* @__PURE__ */ new Set();
   /** Whether a tick is running, which is what makes removal deferred. */
   ticking = false;
-  addActor(actor) {
+  /**
+   * Place an actor, or make one from a template and place that.
+   *
+   * TWO shapes because one BLOCK reaches both. `add actor` generates
+   * `world.addActor(Template, id, type, layer)`, and under `define world` that
+   * lands on `WorldBuilder`; in a rule step or an event handler — spawning a
+   * bullet, splitting an asteroid — it lands here. A method that existed on one
+   * of them only is a crash carrying the block's own name at the moment a
+   * learner runs their game (`builderSurface.test`), so the two agree.
+   *
+   * The template form is told apart by duck-typing rather than by importing
+   * `ActorBuilder` for an `instanceof`: that import would be a cycle, and the
+   * same trade is already made in `Traited`'s coercion.
+   */
+  addActor(subject, idOrLayer, type, layer) {
+    if (typeof subject.instantiate !== "function") {
+      return this.place(subject, idOrLayer);
+    }
+    const template = subject;
+    const actor = template.instantiate(
+      this.resolveInstanceId(template, idOrLayer),
+      type
+    );
+    this.useActorKind(actor.type, template);
+    return this.place(actor, layer);
+  }
+  /**
+   * A free id for a new instance.
+   *
+   * A block's id is stable and unique in a WORLD, which is what makes it the
+   * right name for something placed once while describing one. It is neither
+   * once the same block runs again — a spawn in a step fires every frame — so a
+   * taken id gains an ordinal. An id nobody asked for gets a random one, since
+   * there is no name to keep.
+   */
+  resolveInstanceId(template, explicitId) {
+    const base = explicitId ?? template.id;
+    if (!this.hasActor(base)) {
+      return base;
+    }
+    if (explicitId === void 0) {
+      return `${template.id}-${crypto.randomUUID()}`;
+    }
+    let ordinal = 2;
+    while (this.hasActor(`${base}#${ordinal}`)) {
+      ordinal += 1;
+    }
+    return `${base}#${ordinal}`;
+  }
+  /**
+   * Let an actor KIND contribute its own per-frame steps.
+   *
+   * The `each frame` an `.actor` file may declare (blockly/actorMeta), and the
+   * counterpart to `defineProperty`: state a kind carries without a rule, and
+   * now behaviour a kind runs without one. A rule is still what you write when
+   * the behaviour is shared, elected or answerable — this is for the case where
+   * it is none of those and a whole `.rule` file is more ceremony than the thing
+   * deserves.
+   *
+   * PER KIND, NOT PER ACTOR. One step is added however many of the kind there
+   * are, and it walks `actors.ofType(type)` — so thirty-one ground tiles are one
+   * entry in the order rather than thirty-one, and an actor placed later is
+   * swept up without anything being registered again.
+   *
+   * Called where the template and the TYPE it is being placed under are both in
+   * hand, which is `addActor` here and `loadMap` on the builder. The type is
+   * what binds them: it is what `any ⟨Coin⟩` means everywhere else, so a step
+   * declared by the coin runs for exactly the actors a learner would point at.
+   *
+   * The scheduler is rebuilt, not appended to — the order is a topological sort
+   * and a new step may belong anywhere in it. A rebuild during a tick is safe:
+   * `Scheduler.run` is iterating the array it started with, so a kind spawned
+   * mid-frame joins the order on the next one.
+   */
+  useActorKind(type, template) {
+    if (template.ownDrawing && !this.kindDrawings.has(type)) {
+      this.kindDrawings.set(type, template.ownDrawing);
+    }
+    const steps = template.ownSteps ?? [];
+    if (!steps.length || this.kindsWithSteps.has(type)) {
+      return;
+    }
+    this.kindsWithSteps.add(type);
+    for (const step of steps) {
+      this.stepList.push({
+        id: `${type}.${step.id}`,
+        ownerId: type,
+        order: { kind: "phase", phase: step.phase },
+        run: (world, delta) => {
+          for (const actor of world.actors.ofType(type)) {
+            step.run(actor, world, delta);
+          }
+        }
+      });
+    }
+    this.scheduler = new Scheduler(this.stepList);
+  }
+  /**
+   * The `intrinsic size` property, resolved through the membership rather than
+   * imported.
+   *
+   * `renderSnapshot` reaches Space's properties the same way and for the same
+   * reason: the World holds rules it was given, and importing one of them here
+   * would make the core depend on a rule it is supposed to merely run.
+   */
+  intrinsicSizeProperty() {
+    const spatial = this.membership.items().find((r) => r.id === SPATIAL.rule);
+    const positional = spatial?.traits[SPATIAL.trait];
+    return positional?.properties[SPATIAL.intrinsicSize];
+  }
+  place(actor, layer = DEFAULT_LAYER_ID) {
     actor.world = this;
+    actor.bornAt = this.elapsed;
+    actor.layer = this.layerIndex.has(layer) ? layer : DEFAULT_LAYER_ID;
+    const drawing = this.kindDrawings.get(actor.type);
+    if (drawing) {
+      const property = this.intrinsicSizeProperty();
+      if (property) {
+        actor.set(property, new Vector(drawing.width, drawing.height));
+      }
+    }
     this.actorList.push(actor);
+    return actor;
+  }
+  /** The cameras this world holds. Never empty; the default is among them. */
+  get cameras() {
+    return this.cameraCollection;
+  }
+  /**
+   * A camera by id, or the default.
+   *
+   * An unknown id is the default rather than an error, for the reason
+   * `addActor` gives about layers: the id comes from generated code naming a
+   * block that may since have been deleted, and a world with no view at all is
+   * not a better answer than a world looking through its default.
+   */
+  /**
+   * Declare a camera.
+   *
+   * Not hoisted, unlike a layer: a camera is an entry in a list rather than a
+   * place in a scene graph, so one can be added to a world that already exists.
+   * Declaring the same id twice is the earlier one, so a reload cannot stack
+   * duplicates.
+   */
+  defineCamera(init) {
+    if (!this.cameraList.some((camera) => camera.id === init.id)) {
+      const camera = makeCamera(init);
+      camera.world = this;
+      this.cameraList.push(camera);
+    }
+    return this;
+  }
+  /**
+   * Take the view through a different camera.
+   *
+   * A VALUE, not structure: switching cameras moves a transform and rebuilds
+   * nothing, so a game may cut between them without restarting. An unknown id
+   * leaves the view where it is rather than blacking it out.
+   */
+  setActiveCamera(id) {
+    if (this.cameraList.some((camera) => camera.id === id)) {
+      this.activeCameraId = id;
+    }
+    return this;
+  }
+  /** The camera the view is currently taken through. */
+  activeCamera() {
+    return this.camera(this.activeCameraId);
+  }
+  camera(id = DEFAULT_CAMERA_ID) {
+    return this.cameraList.find((camera) => camera.id === id) ?? this.cameraList.find((entry) => entry.id === DEFAULT_CAMERA_ID) ?? this.cameraList[0];
+  }
+  /**
+   * Move a camera, in world pixels.
+   *
+   * Copied rather than adopted, like a slot's offset and for the same reason: a
+   * step that follows the player writes this every tick, and sharing one Vector
+   * with the world would let a later mutation move the view with no call.
+   */
+  setCameraPosition(position, id = DEFAULT_CAMERA_ID) {
+    this.camera(id).position = new Vector(position.x, position.y);
+    return this;
+  }
+  /**
+   * How much of the camera's motion a layer takes, per axis.
+   *
+   * Copied rather than adopted, like a camera's position and a slot's offset:
+   * a rule turning this every tick would otherwise share one Vector with the
+   * world.
+   */
+  setLayerParallax(parallax, layer = DEFAULT_LAYER_ID) {
+    const found = this.layer(layer) ?? this.layerList[0];
+    found.parallax = new Vector(parallax.x, parallax.y);
+    return this;
+  }
+  /** Whether a layer ignores the camera entirely — what a HUD is. */
+  setLayerFit(fit, layer = DEFAULT_LAYER_ID) {
+    (this.layer(layer) ?? this.layerList[0]).fit = fit;
+    return this;
+  }
+  /** The layers, back to front. Index is depth; index 0 is the default. */
+  get layers() {
+    return this.layerList;
+  }
+  /** A layer by id, or undefined. */
+  layer(id) {
+    const index = this.layerIndex.get(id);
+    return index === void 0 ? void 0 : this.layerList[index];
+  }
+  /** How deep a layer draws — its position in the stack. */
+  depthOf(layer) {
+    return this.layerIndex.get(layer) ?? 0;
   }
   /**
    * Take an actor out of the world.
@@ -740,14 +1515,174 @@ var World = class {
       this.actorList.splice(index, 1);
     }
     actor.world = void 0;
+    actor.layer = void 0;
   }
   /** Whether an actor with `id` is already in this world. */
   hasActor(id) {
     return this.actorList.some((actor) => actor.id === id);
   }
+  /**
+   * How many actors are in the world.
+   *
+   * Asked by `WorldBuilder.requireNoActors` to tell "the world exists" from
+   * "the world has been populated" — only the second makes a late declaration
+   * (a rule, an animation, a layer) impossible to honour.
+   */
+  actorCount() {
+    return this.actorList.length;
+  }
   /** Raise an event for `actor`; dispatched after the current tick's steps. */
   emit(event, actor, detail) {
     this.events.enqueue(event, actor, detail);
+  }
+  /**
+   * Whether `event` is already queued for `actor` — see `EventQueue.isPending`.
+   *
+   * For a raiser that must not raise twice in one tick, and would otherwise
+   * have to keep a per-actor flag and clear it at some moment of its own.
+   */
+  hasPendingEvent(event, actor) {
+    return this.events.isPending(event, actor);
+  }
+  /**
+   * Raise an event that is about the WORLD — a key went down, a level was
+   * cleared — with no actor it happened to.
+   *
+   * A separate method rather than an optional argument, because the two say
+   * different things and `emit(event, detail)` would read as an actor with the
+   * detail in its place. Which of the two a rule uses is decided by where it
+   * declared the event: under a trait it is an actor's, on the rule it is the
+   * world's.
+   *
+   * Dispatched with the actor ones, after this tick's steps.
+   */
+  emitToWorld(event, detail) {
+    this.events.enqueue(event, void 0, detail);
+  }
+  /**
+   * Handle a world event. The counterpart of `Actor.on`, and the reason a world
+   * event needs no actor to be raised for: the world holds the handlers.
+   */
+  on(event, handler) {
+    const list = this.worldHandlers.get(event);
+    if (list) {
+      list.push(handler);
+    } else {
+      this.worldHandlers.set(event, [handler]);
+    }
+  }
+  /** Handlers registered for a world event; used by the EventQueue on flush. */
+  handlersFor(event) {
+    return this.worldHandlers.get(event) ?? [];
+  }
+  /**
+   * How big the world is, in world pixels — the largest map loaded into it.
+   *
+   * The LARGEST rather than the first or the last, because a world may load
+   * several (a level and a HUD) and the honest answer to "how big is this
+   * world" is as big as the biggest thing in it. A HUD the size of the viewport
+   * must not shrink the level.
+   *
+   * The viewport's own size until a map says otherwise, so a world with no map
+   * is one screen big rather than zero.
+   *
+   * Safe to hand out directly: a Vector is immutable.
+   */
+  mapBounds() {
+    return this.bounds;
+  }
+  /**
+   * Somewhere in the map, picked at random — uniform over the whole rectangle.
+   *
+   * Here rather than in the block that offers it, because "the map" is the
+   * world's own idea and the block would otherwise have to ask for the bounds
+   * and then do arithmetic on them in generated code. It also means the builder
+   * can answer it (`WorldBuilder.randomPlace`), so scattering asteroids while
+   * describing a world reads the same as spawning one mid-game.
+   *
+   * NOT seeded, so two runs differ. That is what a learner means by random, and
+   * a repeatable game is a bigger idea than this block should smuggle in.
+   */
+  randomPlace() {
+    const bounds = this.mapBounds();
+    return new Vector(Math.random() * bounds.x, Math.random() * bounds.y);
+  }
+  /**
+   * Seconds the world has been running.
+   *
+   * The sum of every `delta` it has been ticked by, NOT a reading of the wall
+   * clock. Three things follow, and all three are the point:
+   *
+   * A world that is not ticking does not age. Pause the game and time stops
+   * with it, which is what a learner means by "two seconds later" — two seconds
+   * of game, not two seconds of sitting in a paused tab.
+   *
+   * It agrees exactly with anything integrated from `delta`. A bullet that has
+   * travelled `speed × 2` has an age of exactly 2, because the same numbers
+   * added up both times. Sampling a clock here would let the two disagree by
+   * however long the frame took to draw.
+   *
+   * And it is stamped ONCE per frame, before any step runs, so every step in a
+   * frame reads the same value. That is what lets steps sharing a moment
+   * commute: two steps that both ask the time get the same answer whichever
+   * order the scheduler happens to run them in (core/phases).
+   */
+  time() {
+    return this.elapsed;
+  }
+  /**
+   * How big the window onto the world is, in world pixels.
+   *
+   * Fixed today (core/viewport). A method rather than the constant so a rule
+   * reads it the way it reads everything else about the world, and so making it
+   * settable later changes nothing that asks.
+   */
+  viewSize() {
+    return new Vector(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+  }
+  /**
+   * Say how big the world is, in TILES.
+   *
+   * The other way bounds are decided, and the only one a world without a
+   * `.map` file has: `growToFit` learns the size from a document, and this is
+   * a world stating it. A world that places its actors with `create in map`
+   * arranges them in the block rather than in a document, so nothing would
+   * otherwise ever tell it that the level is four screens wide — and every
+   * rule that asks (`Camera Confined`, "Stays in the Map", `random place`)
+   * would go on answering "one screen" without complaining.
+   *
+   * TILES, although `mapBounds` answers in pixels, and the asymmetry is the
+   * right way round. A map is AUTHORED in tiles — it is what the map editor's
+   * Width and Height are, and what a `.map` file's `size` holds — while
+   * everything that reads a size is doing arithmetic against positions, which
+   * are pixels. So the unit each end uses is the unit its own side works in,
+   * and the conversion happens once, here.
+   *
+   * Against the engine's `TILE_SIZE`, since a world stating its own size has
+   * no document to carry a tile size of its own.
+   *
+   * SET rather than grow, unlike `growToFit`. This is a world saying what it
+   * is, so it wins over the default; a map loaded afterwards may still grow it
+   * past this, which keeps "as big as the biggest thing in it" true.
+   */
+  setMapSize(columns, rows) {
+    this.bounds = new Vector(
+      Math.max(0, Math.round(columns)) * TILE_SIZE || VIEWPORT_WIDTH,
+      Math.max(0, Math.round(rows)) * TILE_SIZE || VIEWPORT_HEIGHT
+    );
+  }
+  /**
+   * Take a map's size into account. Called by `loadMap`, which is the only
+   * thing that knows a map was loaded.
+   */
+  growToFit(map) {
+    if (!map.size || !map.tile) {
+      return;
+    }
+    this.bounds = new Vector(
+      Math.max(this.bounds.x, map.size.width * map.tile.width),
+      Math.max(this.bounds.y, map.size.height * map.tile.height)
+    );
   }
   /** Replace the pressed-key set (driver calls this each frame before `tick`). */
   setInput(keys) {
@@ -765,7 +1700,72 @@ var World = class {
   newlyReleasedKeys() {
     return [...this.previousKeys].filter((key) => !this.keys.has(key));
   }
+  /**
+   * Replace the mouse's state — where it is, and which buttons are held.
+   *
+   * One call rather than two because they arrive together and are read
+   * together: a click is a button and a place, and a frame that learned the
+   * button before the position would put the first click of a game wherever
+   * the pointer last was.
+   *
+   * `at` is in VIEWPORT pixels (see the field), and the driver calls this each
+   * frame before `tick`, as it does `setInput`.
+   */
+  setPointer(at, buttons) {
+    this.pointer = new Vector(at.x, at.y);
+    this.buttons = new Set(buttons);
+  }
+  /** Whether `button` (a name from `core/pointer`) is currently held. */
+  isButtonDown(button) {
+    return this.buttons.has(button);
+  }
+  /** Buttons pressed this tick that were not pressed last tick. */
+  newlyPressedButtons() {
+    return [...this.buttons].filter(
+      (button) => !this.previousButtons.has(button)
+    );
+  }
+  /** Buttons released this tick that were pressed last tick. */
+  newlyReleasedButtons() {
+    return [...this.previousButtons].filter(
+      (button) => !this.buttons.has(button)
+    );
+  }
+  /**
+   * Where the mouse is IN THE WORLD — the point it is over.
+   *
+   * Not where it is on the screen, which is what the driver reported and what
+   * this converts: a camera two screens along means the pointer at the middle
+   * of the window is over a place two screens along, and "is the mouse over
+   * this actor" is a question about that place. A camera's position is the
+   * point it shows at the MIDDLE of the view (core/Camera), so the window's
+   * top-left corner is half a view up and to the left of it.
+   *
+   * Measured against the ACTIVE camera, which is the view the learner is
+   * looking at. A layer with parallax of its own draws somewhere else and this
+   * does not know about it — the same thing `map size` and every other world
+   * coordinate already assume, and the answer a game wants for the layer its
+   * actors are on.
+   */
+  mousePosition() {
+    const view = this.viewSize();
+    const camera = this.activeCamera();
+    return new Vector(
+      camera.position.x - view.x / 2 + this.pointer.x,
+      camera.position.y - view.y / 2 + this.pointer.y
+    );
+  }
   /** The definition of a known animation, or undefined. */
+  /** How big an image is, if the project measured it. */
+  imageSize(name) {
+    return this.imageSizes.get(name);
+  }
+  /** Record what the project's images measure — see {@link imageSize}. */
+  useImageSizes(sizes) {
+    for (const [name, size] of Object.entries(sizes)) {
+      this.imageSizes.set(name, size);
+    }
+  }
   animation(id) {
     return this.animationDefs.get(id);
   }
@@ -776,6 +1776,7 @@ var World = class {
   /** Advance the simulation by `delta` seconds. */
   tick(delta) {
     this.ticking = true;
+    this.elapsed += delta;
     try {
       this.scheduler.run(this, delta);
       this.events.flush(this);
@@ -787,6 +1788,7 @@ var World = class {
       this.leaving.clear();
     }
     this.previousKeys = this.keys;
+    this.previousButtons = this.buttons;
   }
   /** The resolved step order — for inspection and tests. */
   stepOrder() {
@@ -840,22 +1842,36 @@ var World = class {
    * by an event handler, or by the hot-reload patch — shows up on the next one.
    */
   backdropSnapshot() {
-    return this.backdropList;
+    return this.layerList.map((layer) => layer.background);
   }
   /**
-   * The layer `n`, creating the layers up to it if they do not exist yet.
+   * The same for the foregrounds — what each layer draws IN FRONT of its
+   * actors, in stack order.
    *
-   * Growing rather than throwing is what makes the optional `layer` argument on
-   * the methods below a real promise: parallax adds blocks that name a layer,
-   * and nothing about the engine has to change when they arrive. A new layer
-   * starts transparent, so adding layer 2 does not black out layer 0.
+   * A second list rather than a second field on the first: the driver draws the
+   * two at different depths and holds a separate image cache for each, so it
+   * wants them apart, and there is nothing either needs to know about the other.
    */
+  foregroundSnapshot() {
+    return this.layerList.map((layer) => layer.foreground);
+  }
+  /** The one colour behind everything, as the driver clears to it. */
+  backdropColor() {
+    return this.clearColor;
+  }
+  /**
+   * The background slot of a layer, or of the default layer.
+   *
+   * An unknown id is the default rather than an error, for the reason
+   * `addActor` gives: the id comes from generated code naming a `define layer`
+   * block, and deleting that block while a `set background` still names it
+   * should paint somewhere visible instead of taking the world down.
+   */
+  slotAt(layer, which) {
+    return (this.layer(layer) ?? this.layerList[this.depthOf(DEFAULT_LAYER_ID)])[which];
+  }
   backdropAt(layer) {
-    const index = Math.max(0, Math.floor(layer));
-    while (this.backdropList.length <= index) {
-      this.backdropList.push({ color: [0, 0, 0, 0], effects: [] });
-    }
-    return this.backdropList[index];
+    return this.slotAt(layer, "background");
   }
   /**
    * Draw `sprite` behind everything — an image file name, as a frame names one.
@@ -865,8 +1881,45 @@ var World = class {
    * big it is, and a backdrop is never a spritesheet, so this takes a file name
    * and never a cell reference.
    */
-  setBackground(sprite, layer = 0) {
+  setBackground(sprite, layer = DEFAULT_LAYER_ID) {
     this.backdropAt(layer).sprite = sprite;
+    return this;
+  }
+  /**
+   * Slide a layer's background, in world pixels.
+   *
+   * Motion the author owns, independent of any camera — which is what makes
+   * drifting clouds expressible before cameras exist at all (core/Layer). Pair
+   * it with `setBackgroundRepeat` unless the image is meant to leave a gap.
+   */
+  setBackgroundOffset(offset, layer = DEFAULT_LAYER_ID) {
+    this.slotAt(layer, "background").offset = new Vector(offset.x, offset.y);
+    return this;
+  }
+  /** The same for a layer's foreground. */
+  setForegroundOffset(offset, layer = DEFAULT_LAYER_ID) {
+    this.slotAt(layer, "foreground").offset = new Vector(offset.x, offset.y);
+    return this;
+  }
+  /** Tile a layer's background rather than stretching it to the surface. */
+  setBackgroundRepeat(repeat, layer = DEFAULT_LAYER_ID) {
+    this.slotAt(layer, "background").repeat = repeat;
+    return this;
+  }
+  /** The same for a layer's foreground. */
+  setForegroundRepeat(repeat, layer = DEFAULT_LAYER_ID) {
+    this.slotAt(layer, "foreground").repeat = repeat;
+    return this;
+  }
+  /**
+   * Draw `sprite` in FRONT of this layer's actors — fog, snow, a vignette.
+   *
+   * The background's twin in every respect but depth. `undefined` clears it,
+   * leaving nothing drawn: unlike the background there is no colour behind a
+   * foreground, because a colour in front of everything would be a wall.
+   */
+  setForeground(sprite, layer = DEFAULT_LAYER_ID) {
+    this.slotAt(layer, "foreground").sprite = sprite;
     return this;
   }
   /**
@@ -880,7 +1933,7 @@ var World = class {
    * hidden by the layer under it.
    */
   setBackgroundColor(color) {
-    this.backdropAt(0).color = rgba(color);
+    this.clearColor = rgba(color);
     return this;
   }
   /**
@@ -893,7 +1946,7 @@ var World = class {
    * One entry per path and never stacked, exactly as on the world and on an
    * actor — adding one already present retunes it.
    */
-  addBackgroundEffect(path, document, values, layer = 0) {
+  addBackgroundEffect(path, document, values, layer = DEFAULT_LAYER_ID) {
     const spec = values ? { path, document, values } : { path, document };
     const effects = this.backdropAt(layer).effects;
     const index = effects.findIndex((effect) => effect.path === path);
@@ -904,8 +1957,85 @@ var World = class {
     effects.push(spec);
     return this;
   }
+  /**
+   * Play an effect on a LAYER — its actors and both its images together.
+   *
+   * The scope between a slot's and the world's: a slot effect filters one
+   * image, a world effect filters the whole screen after everything is
+   * composited, and this filters one layer's worth of it. Blurring the game
+   * while the score stays sharp is the case it exists for, and neither of the
+   * other two can say it.
+   */
+  addLayerEffect(path, document, values, layer = DEFAULT_LAYER_ID) {
+    const spec = values ? { path, document, values } : { path, document };
+    const effects = (this.layer(layer) ?? this.layerList[0]).effects;
+    const index = effects.findIndex((effect) => effect.path === path);
+    if (index >= 0) {
+      effects[index] = spec;
+      return this;
+    }
+    effects.push(spec);
+    return this;
+  }
+  /** Stop an effect on a layer. Removing one not playing is a no-op. */
+  removeLayerEffect(path, layer = DEFAULT_LAYER_ID) {
+    const effects = (this.layer(layer) ?? this.layerList[0]).effects;
+    const index = effects.findIndex((effect) => effect.path === path);
+    if (index >= 0) {
+      effects.splice(index, 1);
+    }
+    return this;
+  }
+  /**
+   * Each layer's id and its own effects, in stack order.
+   *
+   * What the driver needs to build one filterable container per layer; the
+   * slots' images and the actors are read separately, as they always were.
+   */
+  layerSnapshot() {
+    return this.layerList.map((layer) => ({
+      id: layer.id,
+      effects: layer.effects,
+      parallax: { x: layer.parallax.x, y: layer.parallax.y },
+      fit: layer.fit
+    }));
+  }
+  /**
+   * Where each camera is looking from, in declaration order.
+   *
+   * Read every frame beside `renderSnapshot`, so a camera moved by a handler or
+   * a step shows up on the next one.
+   */
+  cameraSnapshot() {
+    return this.cameraList.map((camera) => ({
+      id: camera.id,
+      position: { x: camera.position.x, y: camera.position.y },
+      active: camera.id === this.activeCameraId
+    }));
+  }
+  /** Play an effect on a layer's FOREGROUND. See {@link addBackgroundEffect}. */
+  addForegroundEffect(path, document, values, layer = DEFAULT_LAYER_ID) {
+    const spec = values ? { path, document, values } : { path, document };
+    const effects = this.slotAt(layer, "foreground").effects;
+    const index = effects.findIndex((effect) => effect.path === path);
+    if (index >= 0) {
+      effects[index] = spec;
+      return this;
+    }
+    effects.push(spec);
+    return this;
+  }
+  /** Stop an effect on a layer's foreground. Removing one not playing is a no-op. */
+  removeForegroundEffect(path, layer = DEFAULT_LAYER_ID) {
+    const effects = this.slotAt(layer, "foreground").effects;
+    const index = effects.findIndex((effect) => effect.path === path);
+    if (index >= 0) {
+      effects.splice(index, 1);
+    }
+    return this;
+  }
   /** Stop an effect on the backdrop. Removing one not playing is a no-op. */
-  removeBackgroundEffect(path, layer = 0) {
+  removeBackgroundEffect(path, layer = DEFAULT_LAYER_ID) {
     const effects = this.backdropAt(layer).effects;
     const index = effects.findIndex((effect) => effect.path === path);
     if (index >= 0) {
@@ -923,24 +2053,38 @@ var World = class {
   allEffects() {
     return [
       ...this.appliedEffects,
-      ...this.backdropList.flatMap((backdrop) => [...backdrop.effects]),
+      ...this.layerList.flatMap((layer) => [
+        ...layer.effects,
+        ...layer.background.effects,
+        ...layer.foreground.effects
+      ]),
       ...this.actorList.flatMap((actor) => [...actor.effects()])
     ];
   }
   /**
-   * Every applied effect with what carries it: `world`, `backdrop:<n>`, or the
-   * actor's id. The vocabulary the snapshot and the value patch share.
+   * Every applied effect with what carries it: `world`, `backdrop:<layer id>`,
+   * or the actor's id. The vocabulary the snapshot and the value patch share.
+   *
+   * Keyed by the layer's ID rather than its index: an effect must stay attached
+   * to the same background when a layer is declared above it, and an index
+   * would silently renumber every one below.
    */
   effectSlots() {
     return [
       ...this.appliedEffects.map(
         (effect) => ["world", effect]
       ),
-      ...this.backdropList.flatMap(
-        (backdrop, index) => backdrop.effects.map(
-          (effect) => [`backdrop:${index}`, effect]
+      ...this.layerList.flatMap((layer) => [
+        ...layer.effects.map(
+          (effect) => [`layer:${layer.id}`, effect]
+        ),
+        ...layer.background.effects.map(
+          (effect) => [`backdrop:${layer.id}`, effect]
+        ),
+        ...layer.foreground.effects.map(
+          (effect) => [`foreground:${layer.id}`, effect]
         )
-      ),
+      ]),
       ...this.actorList.flatMap(
         (actor) => actor.effects().map((effect) => [actor.id, effect])
       )
@@ -973,10 +2117,11 @@ var World = class {
     if (owner === "world") {
       return retune(this.appliedEffects);
     }
-    const backdrop = /^backdrop:(\d+)$/.exec(owner);
-    if (backdrop) {
-      const layer = this.backdropList[Number(backdrop[1])];
-      return layer ? retune(layer.effects) : false;
+    const slot = /^(backdrop|foreground):(.+)$/.exec(owner);
+    if (slot) {
+      const layer = this.layer(slot[2]);
+      const which = slot[1] === "backdrop" ? "background" : "foreground";
+      return layer ? retune(layer[which].effects) : false;
     }
     const actor = this.actorList.find((candidate) => candidate.id === owner);
     return actor ? actor.setEffectValues(path, values) : false;
@@ -1002,8 +2147,10 @@ var World = class {
       });
     };
     patch(this.appliedEffects);
-    for (const backdrop of this.backdropList) {
-      patch(backdrop.effects);
+    for (const layer of this.layerList) {
+      patch(layer.effects);
+      patch(layer.background.effects);
+      patch(layer.foreground.effects);
     }
     for (const actor of this.actorList) {
       actor.setEffectDocument(path, document);
@@ -1071,6 +2218,20 @@ var World = class {
       }
       return void 0;
     };
+    const drawingFor = (actor) => {
+      const drawing = this.kindDrawings.get(actor.type);
+      if (!drawing) {
+        return void 0;
+      }
+      const pen = new CommandPen();
+      drawing.run(actor, pen);
+      return {
+        key: drawingKey(drawing.width, drawing.height, pen.commands),
+        width: drawing.width,
+        height: drawing.height,
+        commands: pen.commands
+      };
+    };
     const states = [];
     for (const actor of this.actorList) {
       if (!actor.has(positional)) {
@@ -1087,15 +2248,33 @@ var World = class {
         rotation: actor.get(rotationProp),
         skew: skewProp ? actor.get(skewProp) : 0,
         frame: frameFor(actor),
-        effects: actor.effects()
+        drawing: drawingFor(actor),
+        effects: actor.effects(),
+        layer: this.depthOf(actor.layer ?? DEFAULT_LAYER_ID)
       });
     }
     return states;
   }
-  /** Remove every actor (used by `WorldBuilder.clear`). */
+  /**
+   * Remove every actor (used by `WorldBuilder.clear` and the `clear world` block).
+   *
+   * DEFERRED while a tick is running, exactly as {@link removeActor} is and for
+   * the same reason: clearing the world is something a handler does — "the
+   * player reached the exit, take it all away" — and a handler runs inside the
+   * walk of the very list this empties. Emptying it underneath that walk skips
+   * whatever came next. `WorldBuilder.clear` calls this at setup, where nothing
+   * is ticking and it takes effect at once.
+   */
   clearActors() {
+    if (this.ticking) {
+      for (const actor of this.actorList) {
+        this.leaving.add(actor);
+      }
+      return;
+    }
     for (const actor of this.actorList) {
       actor.world = void 0;
+      actor.layer = void 0;
     }
     this.actorList.length = 0;
   }
@@ -1107,6 +2286,12 @@ var World = class {
           this.set(property, value);
           return true;
         }
+      }
+    }
+    for (const property of this.ownProperties) {
+      if (`${property.ownerId}.${property.id}` === path) {
+        this.set(property, value);
+        return true;
       }
     }
     return false;
@@ -1147,18 +2332,24 @@ var World = class {
     const world = {};
     for (const rule3 of rules) {
       for (const property of Object.values(rule3.properties)) {
-        if (property.type === "actors") {
+        if (property.type === "actors" || property.type === "actor") {
           continue;
         }
         world[`${property.ownerId}.${property.id}`] = this.get(property);
       }
+    }
+    for (const property of this.ownProperties) {
+      if (property.type === "actors" || property.type === "actor") {
+        continue;
+      }
+      world[`${property.ownerId}.${property.id}`] = this.get(property);
     }
     const actors = {};
     for (const actor of this.actorList) {
       const values = {};
       for (const trait of actor.traits()) {
         for (const property of Object.values(trait.properties)) {
-          if (property.type === "actors") {
+          if (property.type === "actors" || property.type === "actor") {
             continue;
           }
           values[`${property.ownerId}.${property.id}`] = actor.get(property);
@@ -1172,6 +2363,24 @@ var World = class {
         rules.map((rule3) => [rule3.id, ruleContentHash(rule3)])
       ),
       actorIds: this.actorList.map((actor) => actor.id).sort(),
+      cameras: this.cameraList.map((camera) => camera.id),
+      activeCamera: this.activeCameraId,
+      cameraPositions: Object.fromEntries(
+        this.cameraList.map((camera) => [
+          camera.id,
+          { x: camera.position.x, y: camera.position.y }
+        ])
+      ),
+      layers: this.layerList.map((layer) => layer.id),
+      layerMotion: Object.fromEntries(
+        this.layerList.map((layer) => [
+          layer.id,
+          {
+            parallax: { x: layer.parallax.x, y: layer.parallax.y },
+            fit: layer.fit
+          }
+        ])
+      ),
       // By actor id so the list is stable, but NOT sorted within an actor:
       // handlers for one event run in registration order, so a reorder is a
       // real change and should read as one.
@@ -1197,10 +2406,15 @@ var World = class {
           effectContentHash(effect)
         ])
       ),
-      backdrops: this.backdropList.map((backdrop) => ({
-        ...backdrop.sprite === void 0 ? {} : { sprite: backdrop.sprite },
-        color: [...backdrop.color]
-      })),
+      // Per layer, in stack order, plus the world's one colour. Values, not
+      // structure: changing the sky patches the running game.
+      backdrops: this.layerList.map(
+        (layer) => slotValues(layer.id, layer.background)
+      ),
+      foregrounds: this.layerList.map(
+        (layer) => slotValues(layer.id, layer.foreground)
+      ),
+      clearColor: [...this.clearColor],
       world,
       actors
     };
@@ -1217,6 +2431,16 @@ function frameDelay(def, frame) {
     return 1e3 / def.frameRate;
   }
   return DEFAULT_FRAME_DELAY;
+}
+
+// src/engine/core/watchProperty.ts
+function watchProperty(property, watcher) {
+  const list = property.watch;
+  if (list) {
+    list.push(watcher);
+  } else {
+    property.watch = [watcher];
+  }
 }
 
 // src/engine/rules/spatial.ts
@@ -1285,6 +2509,43 @@ var ResizeAction = PositionalTrait.addAction(
   (actor, factor) => actor.set(ScaleProperty, new Vector(factor, factor)),
   { name: "Resize to", params: [{ name: "factor", type: "number", default: 1 }] }
 );
+var ASSUMED_SIZE = 32;
+function halfExtent(actor) {
+  const intrinsic = actor.get(IntrinsicSizeProperty);
+  const scale = actor.get(ScaleProperty);
+  const width = (intrinsic.x > 0 ? intrinsic.x : ASSUMED_SIZE) * Math.abs(scale.x);
+  const height = (intrinsic.y > 0 ? intrinsic.y : ASSUMED_SIZE) * Math.abs(scale.y);
+  return new Vector(width / 2, height / 2);
+}
+function outsideMapAt(actor, at) {
+  const world = actor.world;
+  if (!world) {
+    return false;
+  }
+  const half = halfExtent(actor);
+  const bounds = world.mapBounds();
+  return at.x + half.x < 0 || at.y + half.y < 0 || at.x - half.x > bounds.x || at.y - half.y > bounds.y;
+}
+var OutsideMapQuery = PositionalTrait.addQuery(
+  "outsideMap",
+  (actor) => outsideMapAt(actor, actor.get(PositionProperty)),
+  { name: "is outside the map", returns: "boolean" }
+);
+var LeftMapEvent = rule.addEvent("leftMap", {
+  name: "leaves the map"
+});
+watchProperty(PositionProperty, (actor, previous, next) => {
+  const world = actor.world;
+  if (!world) {
+    return;
+  }
+  if (outsideMapAt(actor, previous) || !outsideMapAt(actor, next)) {
+    return;
+  }
+  if (!world.hasPendingEvent(LeftMapEvent, actor)) {
+    world.emit(LeftMapEvent, actor);
+  }
+});
 var SpatialRule = rule.build();
 
 // src/engine/rules/animation.ts
@@ -1359,6 +2620,21 @@ var AnimationEndedEvent = rule2.addEvent("animationEnded", {
 var FrameChangedEvent = rule2.addEvent("frameChanged", {
   name: "animation frame changes"
 });
+function publishPictureSize(world, actor) {
+  const cell = actor.get(SpriteCellSizeProperty);
+  if (cell.x > 0 && cell.y > 0) {
+    actor.set(IntrinsicSizeProperty, new Vector(cell.x, cell.y));
+    return;
+  }
+  const sprite = actor.get(SpriteProperty);
+  const measured = sprite ? world.imageSize(sprite) : void 0;
+  if (measured) {
+    actor.set(
+      IntrinsicSizeProperty,
+      new Vector(measured.width, measured.height)
+    );
+  }
+}
 function publishIntrinsicSize(actor, def) {
   let width = 0;
   let height = 0;
@@ -1376,6 +2652,7 @@ var AdvanceAnimationStep = rule2.addStep(
   "advanceAnimation",
   (world, delta) => {
     for (const actor of world.actors.with(AppearanceTrait)) {
+      publishPictureSize(world, actor);
       const id = actor.get(AnimationProperty);
       const def = id ? world.animation(id) : void 0;
       const requested = actor.get(RestartRequestedProperty);
@@ -1437,13 +2714,23 @@ var WorldBuilder = class {
   name;
   rules = [];
   hidden = /* @__PURE__ */ new Set();
-  overrides = [];
   animations = {};
-  effects = [];
-  // Backdrop layers as described, back to front. Empty until something says
-  // otherwise; the World fills in the default layer either way.
-  backdrops = [];
+  // Layers as declared, back to front. Empty until something says otherwise;
+  // the World fills in the default layer either way.
+  layers = [];
   types = /* @__PURE__ */ new Map();
+  /** State this WORLD carries, without a rule to carry it (specs/WORLD_STATE.md). */
+  own = [];
+  /**
+   * Every call made on this description, in order.
+   *
+   * Order is the whole of the semantics — `add effect` then `remove effect`
+   * leaves none, the other way round leaves one — so replay walks it forward
+   * and never merges or de-duplicates. The World's own methods are already
+   * idempotent where it matters (`addEffect` by path), so nothing here has to
+   * be.
+   */
+  log = [];
   /** The live world, once something has needed one. See `getWorld`. */
   built;
   constructor(opts) {
@@ -1451,23 +2738,47 @@ var WorldBuilder = class {
     this.name = opts.name;
   }
   /**
-   * Refuse a declaration the live world could not be given after the fact.
+   * Record a call, and make it now if there is a world to make it on.
    *
-   * Only for the two that have no counterpart on `World` — see the note at the
-   * top. Blocks can be reordered in the workspace, so `use rule` below
-   * `load map` is a mistake a learner can make by dragging, and silently
-   * ignoring it would give them a world missing a rule they can plainly see
-   * they asked for.
+   * The single point where the builder's surface meets the World's. `name` is
+   * `keyof World`, so a method that does not exist there — or one whose
+   * arguments do not match — is a compile error rather than a TypeError in a
+   * learner's game, which is what the old hand-written `if (this.built)` pairs
+   * kept producing.
    */
-  requireUnbuilt(what) {
+  defer(name, ...args) {
+    const call = { name, args };
+    this.log.push(call);
     if (this.built) {
+      apply(this.built, call);
+    }
+    return this;
+  }
+  /**
+   * Refuse a declaration the actors already placed could not be given.
+   *
+   * Blocks can be reordered in the workspace, so `use rule` below `load map` is
+   * a mistake a learner can make by dragging.
+   *
+   * When the world exists but is EMPTY the declaration is still in time, and
+   * the world is thrown away rather than refused — the log makes rebuilding it
+   * exact. That matters because reading a camera or the actor list builds a
+   * world (`camera`, `actors`), and a read has never been the thing that makes
+   * a later declaration unsafe.
+   */
+  requireNoActors(what) {
+    if (!this.built) {
+      return;
+    }
+    if (this.built.actorCount() > 0) {
       throw new Error(
         `World '${this.id}': ${what} must come before the actors are placed (move it above "load map" / "add actor").`
       );
     }
+    this.built = void 0;
   }
   useRules(rules) {
-    this.requireUnbuilt("use rule");
+    this.requireNoActors("use rule");
     this.rules = [...this.rules, ...rules];
     return this;
   }
@@ -1481,85 +2792,152 @@ var WorldBuilder = class {
     return this.hidden.has(rule3);
   }
   /**
-   * Set a world-scoped property.
-   *
-   * Before the world is built this is its initial value; after, it is a plain
-   * assignment on the live world, which is what `World.set` does anyway. The
-   * generated `set …` blocks emit `world.set(…)` in a `.world` body and in an
-   * event handler alike, so the two must agree — the same reason `set position`
-   * works on an actor template and a live actor both.
-   */
-  set(property, value) {
-    if (this.built) {
-      this.built.set(property, value);
-      return this;
-    }
-    this.overrides.push([property, value]);
-    return this;
-  }
-  /**
    * Register animations (typically from imported `.anim` files) by id, in
    * addition to the stock animations the active rules ship.
    */
   useAnimations(defs) {
-    this.requireUnbuilt("use animations");
+    this.requireNoActors("use animations");
     Object.assign(this.animations, defs);
     return this;
   }
   /**
-   * Play an effect across the whole viewport (specs/EFFECT_EDITOR.md).
+   * Record how big the project's images are, by file name.
+   *
+   * No block says this, for the reason no block registers an animation file:
+   * how big a picture is is not something a world opts into, it is a fact about
+   * a file the project holds. The generated world states them all.
+   *
+   * Not guarded by `requireNoActors`: this is a measurement, not a law. An
+   * actor placed before it hears about a size the moment one arrives, because
+   * the size is looked up when asked rather than copied at placement.
+   *
+   * Deferred like everything else that is not a construction-time decision, so
+   * it is replayed into any world rebuilt from this description — a size read
+   * once and then lost on the next rebuild would be a rule that worked until
+   * something unrelated touched the world.
+   */
+  useImageSizes(sizes) {
+    return this.defer("useImageSizes", sizes);
+  }
+  /**
+   * Declare a layer, at the back of the stack as it stands.
+   *
+   * Declaration order IS draw order (core/Layer), so this is one of the calls
+   * that must come before the actors: a layer added afterwards would have to be
+   * spliced into a scene graph the driver has already made, and the ordering a
+   * learner can see in their blocks would stop being the ordering they get.
+   */
+  defineLayer(layer) {
+    this.requireNoActors("define layer");
+    this.layers.push(layer);
+    return this;
+  }
+  /**
+   * Register an actor template under the name a Map refers to it by.
+   *
+   * Declarative — it records a template rather than placing anything — so it
+   * may come before or after the world is built.
+   */
+  define(type, builder) {
+    this.types.set(type, builder);
+    return this;
+  }
+  // The rest is the World's surface, deferred. Each is one line on purpose:
+  // the doc comment says what the block means here, `World`'s says what the
+  // call does, and there is no third thing to keep in step.
+  /**
+   * Handle a world event. See {@link World.on}.
+   *
+   * Deferred like everything else, so a `when ⟨space⟩ is pressed` hat at module
+   * scope in a `.world` file registers on the world this describes — `world` is
+   * this builder there, and the same call has to be right in a handler too.
+   */
+  on(event, handler) {
+    return this.defer("on", event, handler);
+  }
+  /**
+   * Set a world-scoped property. See {@link World.set}.
+   *
+   * COLLAPSED IN THE LOG rather than appended to it, alone among the deferred
+   * calls. Everything else here is an act whose order is its meaning — `add
+   * effect` then `remove effect` leaves none — but a property has one value and
+   * the last write wins, so replaying a hundred of them and replaying the last
+   * are the same world. That matters now that a `.world` file's handler is the
+   * ordinary place to keep a score: `world` is this builder there, so a counter
+   * incremented on every click would otherwise grow the log by one entry per
+   * click, for the life of the game (specs/WORLD_STATE.md).
+   *
+   * Replaced IN PLACE, so a value written during setup stays where it was
+   * written relative to the declarations around it.
+   */
+  set(property, value) {
+    const existing = this.log.find(
+      (call) => call.name === "set" && call.args[0] === property
+    );
+    if (existing) {
+      existing.args = [property, value];
+      if (this.built) {
+        apply(this.built, existing);
+      }
+      return this;
+    }
+    return this.defer("set", property, value);
+  }
+  /**
+   * Read a world-scoped property. See {@link World.get}.
+   *
+   * Builds the world, because it hands back a value out of it rather than
+   * telling it something — the same family as `camera`, `actors` and
+   * `mapBounds`. And it has to exist here at all because `world` in a `.world`
+   * file IS this builder, including inside the event handlers written there:
+   * `get score` in a click handler landed on the builder and threw
+   * "world.get is not a function" (specs/WORLD_STATE.md).
+   */
+  get(property) {
+    return this.getWorld().get(property);
+  }
+  /**
+   * Play an effect across the whole viewport. See {@link World.addEffect}.
    *
    * The World counterpart to `ActorBuilder.addEffect`: that one filters one
    * actor's own pixels, this one filters everything the camera has drawn — the
    * underwater distortion covering the whole view, rather than a wobble on one
    * fish. Same document, same parameters; only the surface it lands on differs.
-   *
-   * Named to match `World.addEffect` so one Blockly block covers both: in a
-   * `.world` file `world` is this builder, in an event handler it is the live
-   * World, and `world.addEffect(…)` is right in both places. Once the world
-   * exists this forwards to it, for the same reason — a viewport filter has no
-   * relationship to the actors, so where the block sits relative to `load map`
-   * must not decide whether it works.
-   *
-   * @param path     the effect's module path (`effects/underwater`)
-   * @param document the parsed `.effect` file, imported as JSON by the bundler
-   * @param values   values for the effect's declared parameters, by parameter id
    */
   addEffect(path, document, values) {
-    if (this.built) {
-      this.built.addEffect(path, document, values);
-      return this;
-    }
-    if (this.effects.some((effect) => effect.path === path)) {
-      return this;
-    }
-    this.effects.push(values ? { path, document, values } : { path, document });
-    return this;
+    return this.defer("addEffect", path, document, values);
   }
-  /**
-   * Draw an image behind everything (BACKGROUNDS.md).
-   *
-   * Forwards once the world exists, for the reason `set` and `addEffect` do:
-   * `set background to …` is a block a learner can place under `define world`
-   * or in an event handler, `world` is this builder in one and the live World in
-   * the other, and the same call has to be right in both.
-   */
-  setBackground(sprite, layer = 0) {
-    if (this.built) {
-      this.built.setBackground(sprite, layer);
-      return this;
-    }
-    this.backdropAt(layer).sprite = sprite;
-    return this;
+  /** Stop an effect covering the whole view. See {@link World.removeEffect}. */
+  removeEffect(path) {
+    return this.defer("removeEffect", path);
+  }
+  /** Draw an image behind everything (BACKGROUNDS.md). */
+  setBackground(sprite, layer = DEFAULT_LAYER_ID) {
+    return this.defer("setBackground", sprite, layer);
+  }
+  /** Draw an image in front of a layer's actors. See {@link World.setForeground}. */
+  setForeground(sprite, layer = DEFAULT_LAYER_ID) {
+    return this.defer("setForeground", sprite, layer);
   }
   /** Set the colour behind the backdrop. See {@link World.setBackgroundColor}. */
   setBackgroundColor(color) {
-    if (this.built) {
-      this.built.setBackgroundColor(color);
-      return this;
-    }
-    this.backdropAt(0).color = rgba(color);
-    return this;
+    return this.defer("setBackgroundColor", color);
+  }
+  /** Slide a layer's background. See {@link World.setBackgroundOffset}. */
+  setBackgroundOffset(offset, layer = DEFAULT_LAYER_ID) {
+    return this.defer("setBackgroundOffset", offset, layer);
+  }
+  /** Slide a layer's foreground. */
+  setForegroundOffset(offset, layer = DEFAULT_LAYER_ID) {
+    return this.defer("setForegroundOffset", offset, layer);
+  }
+  /** Tile a layer's background rather than stretching it. */
+  setBackgroundRepeat(repeat, layer = DEFAULT_LAYER_ID) {
+    return this.defer("setBackgroundRepeat", repeat, layer);
+  }
+  /** Tile a layer's foreground rather than stretching it. */
+  setForegroundRepeat(repeat, layer = DEFAULT_LAYER_ID) {
+    return this.defer("setForegroundRepeat", repeat, layer);
   }
   /**
    * Play an effect on the backdrop's own pixels, not on the whole camera.
@@ -1567,46 +2945,123 @@ var WorldBuilder = class {
    * @param path     the effect's module path (`effects/ripple`)
    * @param document the parsed `.effect` file, imported as JSON by the bundler
    * @param values   values for the effect's declared parameters, by parameter id
-   * @param layer    which backdrop; 0 is the one the blocks address
+   * @param layer    which layer's background; the default is the one the
+   *                 blocks address
    */
-  addBackgroundEffect(path, document, values, layer = 0) {
-    if (this.built) {
-      this.built.addBackgroundEffect(path, document, values, layer);
-      return this;
-    }
-    const effects = this.backdropAt(layer).effects;
-    if (effects.some((effect) => effect.path === path)) {
-      return this;
-    }
-    effects.push(values ? { path, document, values } : { path, document });
-    return this;
+  addBackgroundEffect(path, document, values, layer = DEFAULT_LAYER_ID) {
+    return this.defer("addBackgroundEffect", path, document, values, layer);
   }
   /** Stop an effect on the backdrop. Removing one not playing is a no-op. */
-  removeBackgroundEffect(path, layer = 0) {
-    if (this.built) {
-      this.built.removeBackgroundEffect(path, layer);
-      return this;
-    }
-    const effects = this.backdropAt(layer).effects;
-    const index = effects.findIndex((effect) => effect.path === path);
-    if (index >= 0) {
-      effects.splice(index, 1);
-    }
-    return this;
+  removeBackgroundEffect(path, layer = DEFAULT_LAYER_ID) {
+    return this.defer("removeBackgroundEffect", path, layer);
+  }
+  /** Play an effect on a layer's foreground. See {@link World.addForegroundEffect}. */
+  addForegroundEffect(path, document, values, layer = DEFAULT_LAYER_ID) {
+    return this.defer("addForegroundEffect", path, document, values, layer);
+  }
+  /** Stop an effect on a layer's foreground. */
+  removeForegroundEffect(path, layer = DEFAULT_LAYER_ID) {
+    return this.defer("removeForegroundEffect", path, layer);
+  }
+  /** Play an effect on a whole layer. See {@link World.addLayerEffect}. */
+  addLayerEffect(path, document, values, layer = DEFAULT_LAYER_ID) {
+    return this.defer("addLayerEffect", path, document, values, layer);
+  }
+  /** Stop an effect on a whole layer. Removing one not playing is a no-op. */
+  removeLayerEffect(path, layer = DEFAULT_LAYER_ID) {
+    return this.defer("removeLayerEffect", path, layer);
+  }
+  /** How much of the camera's motion a layer takes. See {@link World.setLayerParallax}. */
+  setLayerParallax(parallax, layer) {
+    return this.defer("setLayerParallax", parallax, layer);
+  }
+  /** Whether a layer ignores the camera. See {@link World.setLayerFit}. */
+  setLayerFit(fit, layer) {
+    return this.defer("setLayerFit", fit, layer);
+  }
+  /** Declare a camera. See {@link World.defineCamera}. */
+  defineCamera(init) {
+    return this.defer("defineCamera", init);
+  }
+  /** Take the view through a different camera. See {@link World.setActiveCamera}. */
+  setActiveCamera(id) {
+    return this.defer("setActiveCamera", id);
+  }
+  /** Move a camera. See {@link World.setCameraPosition}. */
+  setCameraPosition(position, id) {
+    return this.defer("setCameraPosition", position, id);
   }
   /**
-   * The described layer `n`, creating the layers up to it. Mirrors the World's
-   * own, so a description and a live world grow alike.
+   * A camera by id. See {@link World.camera}.
+   *
+   * Builds the world, because it hands back an object out of it rather than
+   * telling it something — a world body sets things ON a camera (`set actor to
+   * follow of ⟨camera ⟨Chase⟩⟩`), and inside `define world` the name `world` is
+   * this. A declaration arriving afterwards is still fine while no actor has
+   * been placed (`requireNoActors`), though the Camera read here belongs to the
+   * world that is then discarded; generated code never holds one across a
+   * declaration, since the world root emits every declaration above the body.
    */
-  backdropAt(layer) {
-    const index = Math.max(0, Math.floor(layer));
-    while (this.backdrops.length <= index) {
-      this.backdrops.push({
-        color: this.backdrops.length === 0 ? rgba(DEFAULT_BACKDROP_COLOR) : [0, 0, 0, 0],
-        effects: []
-      });
-    }
-    return this.backdrops[index];
+  camera(id) {
+    return this.getWorld().camera(id);
+  }
+  /**
+   * How big the world is. See {@link World.mapBounds}.
+   *
+   * Builds the world, because it hands back a value out of it rather than
+   * telling it something — the same family as `camera` and `actors`. Read
+   * before any map is loaded it is one screen, which is the truth about a world
+   * with nothing placed in it.
+   */
+  mapBounds() {
+    return this.getWorld().mapBounds();
+  }
+  /**
+   * Say how big the world is, in tiles. See {@link World.setMapSize}.
+   *
+   * The SAME NAME the live World uses, deliberately: a world's size is as
+   * answerable while it runs as while it is described, so `set size of map`
+   * generates one call that works either side of the seam. A builder-only name
+   * would have made the block throw the moment it appeared anywhere but a
+   * `define world` body.
+   *
+   * Deferred, like every other statement about the world rather than about its
+   * construction, so it replays into a world rebuilt from this description.
+   * A size declared once and then lost on the next rebuild would be a camera
+   * that stopped moving for no reason a learner could see.
+   */
+  setMapSize(columns, rows) {
+    return this.defer("setMapSize", columns, rows);
+  }
+  /** Somewhere in the map, at random. See {@link World.randomPlace}. */
+  randomPlace() {
+    return this.getWorld().randomPlace();
+  }
+  /**
+   * Game seconds so far. See {@link World.time}.
+   *
+   * Zero while a world is being described, and honestly so: nothing has ticked
+   * yet. Present rather than builder-forbidden because the block is a plain
+   * reporter a learner may reasonably drop into a `.world` file, and answering
+   * "no time has passed" is better than a method that is not there.
+   */
+  time() {
+    return this.getWorld().time();
+  }
+  /** How big the view is. See {@link World.viewSize}. */
+  viewSize() {
+    return this.getWorld().viewSize();
+  }
+  /**
+   * The actors in the world, as it stands. See {@link World.actors}.
+   *
+   * Builds the world for the reason `camera` does. Read before anything is
+   * placed this is empty, which is the truth rather than an error: `first actor
+   * of type ⟨Player⟩` above `load map` finds none because at that point there
+   * are none.
+   */
+  get actors() {
+    return this.getWorld().actors;
   }
   /**
    * The world this describes, built on first use and returned unchanged after.
@@ -1621,29 +3076,35 @@ var WorldBuilder = class {
     return this.built;
   }
   /**
-   * Register an actor template under the name a Map refers to it by.
+   * Place one actor now, and hand it back so the caller can set values on it.
    *
-   * Declarative — it records a template rather than placing anything — so it
-   * may come before or after the world is built.
+   * `layer` names one declared by {@link defineLayer}; omitted, or naming one
+   * that is not there, it is the default layer (see `World.addActor`).
    */
-  define(type, builder) {
-    this.types.set(type, builder);
-    return this;
+  addActor(builder, id, type, layer) {
+    return this.getWorld().addActor(builder, id, type, layer);
   }
   /**
-   * Place one actor now, and hand it back so the caller can set values on it.
+   * Remove one actor. See {@link World.removeActor}.
+   *
+   * Direct, not logged, for the reason `addActor` is: actors are not part of
+   * the description. `instantiate` replays the log into a world with nothing
+   * placed in it, so a recorded removal would be a call about an actor that
+   * world never had.
    */
-  addActor(builder, id, type) {
-    const world = this.getWorld();
-    const actor = builder.instantiate(
-      this.resolveInstanceId(world, builder, id),
-      type
-    );
-    world.addActor(actor);
-    return actor;
+  removeActor(actor) {
+    return this.getWorld().removeActor(actor);
   }
-  /** Remove every actor. */
-  clear() {
+  /**
+   * Remove every actor. See {@link World.clearActors}.
+   *
+   * Named as the World names it, because one block calls whichever it lands on:
+   * `clear world` generates `world.clearActors()` under `define world` and in a
+   * handler alike. It reads as a strange thing to do while describing a world
+   * until you want a second map to REPLACE the first rather than stack on it,
+   * which is what `loadMap`'s note points at.
+   */
+  clearActors() {
     this.getWorld().clearActors();
   }
   /**
@@ -1651,9 +3112,14 @@ var WorldBuilder = class {
    *
    * A world may load several — a level and a HUD, say. Loading is additive, so
    * they stack in call order; `clear()` first to replace rather than add.
+   *
+   * `layer` puts every actor the map describes into one layer, which is what
+   * makes a HUD a HUD: the map is an ordinary map, and the layer it is loaded
+   * into is the whole of what makes it an interface (specs/VIEWPORT.md).
    */
-  loadMap(map) {
+  loadMap(map, layer) {
     const world = this.getWorld();
+    world.growToFit(map);
     const lookup = this.propertyLookup(world);
     const added = [];
     for (const entry of map.actors) {
@@ -1675,7 +3141,8 @@ var WorldBuilder = class {
           }
         }
       }
-      world.addActor(actor);
+      world.useActorKind(entry.type, builder);
+      world.addActor(actor, layer);
       added.push(actor);
     }
     return added;
@@ -1743,39 +3210,74 @@ var WorldBuilder = class {
     ];
   }
   /**
-   * Build a NEW World from this description.
+   * Build a NEW World from this description: construct, then replay the log.
    *
    * Distinct from `getWorld`, which memoizes: this is for callers that want a
    * throwaway (the thumbnail renderer builds one per picker refresh, and tests
-   * build many).
+   * build many). Two worlds made this way are independent — the log holds the
+   * arguments a call was given, and the World copies what it stores (a Vector,
+   * a colour), so replaying it twice shares nothing.
    */
+  /**
+   * Declare state this WORLD carries — a score, a level number, a flag.
+   *
+   * `ActorBuilder.defineProperty`'s exact sibling, and the same bargain one
+   * level up: the shorthand for state that belongs to nothing shareable. A rule
+   * is still the answer when the state IS a mechanic — something another
+   * project would import — and this is for the case where it is one world's
+   * business and a `.rule` file is more ceremony than the thing deserves.
+   *
+   * NO RULE IS INVENTED. The World's store is otherwise seeded from the rules
+   * in play, and an earlier reading synthesized one per world to hold these.
+   * That works, and it is wrong for the reason `ActorBuilder` gives about
+   * traits: a rule is imported, shared, and named by `use rule`, and this is
+   * none of those — it would put a rule the learner never wrote into
+   * `activeRules()`, into the rules panel, and into the count on their world
+   * block. So the World seeds these slots directly instead.
+   */
+  defineProperty(id, type, defaultValue, opts = {}) {
+    const property = {
+      id,
+      type,
+      default: defaultValue,
+      readonly: opts.readonly ?? false,
+      name: opts.name,
+      scope: "world",
+      // The world that declared it, which is what an error about a missing slot
+      // needs to name. `ownerKind` says there is no rule to point at rather
+      // than leaving a reader to infer it from the id.
+      ownerId: this.id,
+      ownerKind: "world"
+    };
+    this.own.push(property);
+    this.built?.defineOwnProperty(property, defaultValue);
+    return property;
+  }
+  /** The state this world declared for itself, for the World to seed. */
+  get ownProperties() {
+    return this.own;
+  }
   instantiate() {
-    return new World({
+    const world = new World({
       id: this.id,
       name: this.name,
       rules: this.rulesInPlay(),
-      overrides: [...this.overrides],
       animations: Object.entries(this.animations),
-      effects: [...this.effects],
-      backdrops: this.backdrops.map((backdrop) => ({ ...backdrop }))
+      layers: this.layers.map((layer) => ({ ...layer })),
+      ownProperties: this.own
     });
+    for (const call of this.log) {
+      apply(world, call);
+    }
+    return world;
   }
 };
+function apply(world, call) {
+  const method = world[call.name];
+  method.apply(world, call.args);
+}
 
 // src/engine/core/Actor.ts
-var coerce2 = (property, value) => {
-  if (property.type === "vector" || property.type === "point") {
-    return Vector.from(value);
-  }
-  if (property.type === "actors") {
-    if (Array.isArray(value)) {
-      return [...value];
-    }
-    return isActor(value) ? [value] : [];
-  }
-  return value;
-};
-var isActor = (value) => typeof value === "object" && value !== null && "traits" in value;
 var Actor = class {
   /**
    * The world this actor is in, set when it is placed.
@@ -1790,15 +3292,31 @@ var Actor = class {
    * that decides.
    */
   world;
+  /**
+   * The layer this actor is drawn in, set when it is placed.
+   *
+   * Set by the same call and for the same reason as {@link world}: placement is
+   * what decides both. Undefined until placed, and the world's default layer
+   * whenever nothing said otherwise — never "no layer", which would make every
+   * question about layers have two answers (core/Layer).
+   */
+  layer;
+  /**
+   * The world's clock when this actor was placed — the zero its age counts from.
+   *
+   * Set by the same call as {@link world} and {@link layer}, for the same
+   * reason. Zero rather than undefined before placement, so an actor described
+   * in a `.world` file (placed before the first tick) is as old as the game
+   * is — which is the answer a learner expects for something that has been
+   * there the whole time.
+   */
+  bornAt = 0;
   id;
   /** The template (ActorBuilder id) this instance came from — a type tag. */
   type;
   name;
-  membership = new DependencySet(
-    (trait) => trait.requiredTraits,
-    (trait) => trait.id
-  );
-  store = /* @__PURE__ */ new Map();
+  /** Its traits, and a slot for every property they declare (core/Traited). */
+  traited;
   handlers = /* @__PURE__ */ new Map();
   // Held, not interpreted: the engine never looks inside an effect document.
   // Mutable because effects can be added and removed while the game runs — the
@@ -1808,38 +3326,77 @@ var Actor = class {
     this.id = init.id;
     this.type = init.type ?? init.id;
     this.name = init.name;
-    for (const trait of init.traits) {
-      this.membership.add(trait);
-    }
-    for (const trait of this.membership.items()) {
-      for (const property of Object.values(trait.properties)) {
-        this.store.set(property, coerce2(property, property.default));
-      }
-    }
-    for (const [property, value] of init.overrides) {
-      this.store.set(property, coerce2(property, value));
-    }
+    this.traited = new Traited(
+      `Actor '${init.id}'`,
+      init.traits,
+      init.overrides
+    );
     for (const [event, handler] of init.handlers) {
       this.on(event, handler);
     }
     this.appliedEffects = init.effects ? [...init.effects] : [];
   }
   get(property) {
-    if (!this.store.has(property)) {
-      throw new Error(
-        `Actor '${this.id}' has no property '${property.id}' (is trait '${property.ownerId}' applied?)`
-      );
-    }
-    return this.store.get(property);
+    return this.traited.get(property);
   }
-  /** Set a property's value; returns `this` so instance setup can chain. */
+  /**
+   * Set a property's value; returns `this` so instance setup can chain.
+   *
+   * A watched property (`watchProperty`) is read back after the write and the
+   * watchers told what changed. Read BACK rather than passing `value` on,
+   * because `Traited.set` coerces and a watcher comparing the two must be
+   * comparing stored values or it will see changes that did not happen.
+   *
+   * Unwatched — which is every property but one, and the case this is on the
+   * hot path for — costs one field read.
+   */
   set(property, value) {
-    this.store.set(property, coerce2(property, value));
+    const watchers = property.watch;
+    if (!watchers) {
+      this.traited.set(property, value);
+      return this;
+    }
+    const previous = this.traited.get(property);
+    this.traited.set(property, value);
+    const next = this.traited.get(property);
+    for (const watcher of watchers) {
+      watcher(this, previous, next);
+    }
     return this;
   }
   /** Whether this actor has the given trait (directly or by dependency). */
   has(trait) {
-    return this.membership.has(trait);
+    return this.traited.has(trait);
+  }
+  /**
+   * How many game seconds this actor has existed for.
+   *
+   * The question a spawned thing has to be able to answer about itself: a
+   * bullet that removes itself after two seconds, a spark that fades, a shield
+   * that lapses. Written from the world's clock rather than counted up in a
+   * step, so it costs nothing per frame and is right for an actor whose rules
+   * do not include a step at all.
+   *
+   * Zero for an actor no world holds — one made but never placed, or one
+   * already removed. Not an error: asking a thing that is not in the world how
+   * long it has been in the world has a true answer, and it is none.
+   */
+  age() {
+    return this.world ? this.world.time() - this.bornAt : 0;
+  }
+  /**
+   * Elect a trait while the game runs, or drop one — see `core/Traited`, which
+   * owns both and explains why a dropped trait leaves its properties behind.
+   *
+   * Returns `this` so a step can chain, matching `set` and `addEffect`.
+   */
+  addTrait(trait) {
+    this.traited.addTrait(trait);
+    return this;
+  }
+  removeTrait(trait) {
+    this.traited.removeTrait(trait);
+    return this;
   }
   query(query, ...args) {
     return query.evaluate(this, ...args);
@@ -1889,7 +3446,7 @@ var Actor = class {
   }
   /** The traits present on this actor, in application order. */
   traits() {
-    return this.membership.items();
+    return this.traited.traits();
   }
   /** The effects played on this actor's image, in application order. */
   effects() {
@@ -1964,12 +3521,15 @@ var Actor = class {
   }
   /** Whether this actor carries `property` (seeded by one of its traits). */
   hasProperty(property) {
-    return this.store.has(property);
+    return this.traited.hasProperty(property);
   }
 };
 
 // src/engine/builders/ActorBuilder.ts
 var FOUNDATION_TRAITS = [PositionalTrait, AppearanceTrait];
+var FOUNDATION_TRAIT_IDS = FOUNDATION_TRAITS.map(
+  (trait) => trait.id
+);
 var ActorBuilder = class {
   /** The template's id — the actor's type, and the default instance id. */
   id;
@@ -1978,6 +3538,8 @@ var ActorBuilder = class {
   overrides = [];
   handlers = [];
   effects = [];
+  steps = [];
+  drawing;
   constructor(opts) {
     this.id = opts.id;
     this.name = opts.name;
@@ -1986,10 +3548,124 @@ var ActorBuilder = class {
     this.traits = [...this.traits, ...traits];
     return this;
   }
+  /**
+   * Named to match `Actor.addTrait` / `Actor.removeTrait`, and for the reason
+   * `addEffect` gives: ONE Blockly block serves a template body and an event
+   * handler, both bind the identifier `actor`, and the block emits
+   * `actor.addTrait(…)` either way. Without these, dragging the block above the
+   * handlers rather than inside one is `actor.addTrait is not a function`.
+   *
+   * On a template they describe what every instance is MADE with, so removing
+   * one it never elected does nothing — the same silence the live actor gives.
+   */
+  addTrait(trait) {
+    return this.useTraits([trait]);
+  }
+  removeTrait(trait) {
+    if (!trait) {
+      return this;
+    }
+    this.traits = this.traits.filter((held) => held?.id !== trait.id);
+    return this;
+  }
   /** Override a trait property's initial value for this actor. */
   set(property, value) {
     this.overrides.push([property, value]);
     return this;
+  }
+  /**
+   * Declare a property this KIND of actor carries, owned by no trait.
+   *
+   * The shorthand for state that needs no mechanic around it — when a Player
+   * last fired, how much ammo it has — where declaring a trait would mean
+   * declaring a rule in a file of its own. `Traited` already takes slots from
+   * two places, a trait's defaults and the overrides, so this is the second of
+   * those and not a third way for a slot to exist: the property is made here
+   * and immediately overridden with its own default, which is what puts the
+   * slot on every instance.
+   *
+   * NOT a synthesized trait, though that would also have worked. A trait is
+   * something elected, that several kinds of actor may share and that
+   * `has trait` can ask about — none of which is true here. Inventing one to
+   * satisfy a factory signature would put a trait the learner never wrote into
+   * `traits()` and into anything that introspects membership.
+   *
+   * Returns the property so the caller can read and write it; generated actor
+   * modules bind it to a const and their handlers close over it.
+   */
+  defineProperty(id, type, defaultValue, opts = {}) {
+    const property = {
+      id,
+      type,
+      default: defaultValue,
+      readonly: opts.readonly ?? false,
+      name: opts.name,
+      scope: "actor",
+      // The actor kind that declared it, which is what an error about a missing
+      // slot needs to name. There is no trait to point at, and `ownerKind` is
+      // what says so rather than leaving a reader to infer it from the id.
+      ownerId: this.id,
+      ownerKind: "actor"
+    };
+    this.overrides.push([property, defaultValue]);
+    return property;
+  }
+  /**
+   * Declare something this KIND of actor does every frame.
+   *
+   * The behaviour half of `defineProperty`, and the same bargain: state a kind
+   * carries without a rule, and now work a kind does without one. A rule is
+   * still the answer when the behaviour is SHARED between kinds, elected, or
+   * answerable by `has trait` — this is for the case where it is none of those
+   * and a `.rule` file is more ceremony than the thing deserves.
+   *
+   * `run` is handed the actor, so a body written in an `.actor` file means what
+   * it says: `this actor` is this one, and the step runs once per actor of the
+   * kind rather than once for the kind.
+   *
+   * NOT A SYNTHESIZED TRAIT, for the reason `defineProperty` gives: a trait is
+   * elected and shareable and askable, and this is none of them. What carries
+   * it is the World, which folds a kind's steps into the tick order the first
+   * time one of its actors is placed (`World.useActorKind`).
+   */
+  defineStep(id, phase, run) {
+    this.steps.push({ id, phase, run });
+    return this;
+  }
+  /** The per-frame bodies this kind declared, for the World to schedule. */
+  get ownSteps() {
+    return this.steps;
+  }
+  /**
+   * Declare what this KIND of actor looks like, by describing it.
+   *
+   * `defineStep`'s sibling and its opposite. A step is handed the world and may
+   * change it; a drawing is handed a pen and may not — it says how the actor
+   * looks GIVEN what it currently is, and nothing else. That purity is what
+   * lets the picture be identified by what it describes, which is what makes it
+   * possible to draw nine actors with one texture and to draw an unchanging
+   * actor once (specs/DRAWING.md).
+   *
+   * The canvas is declared rather than measured, and becomes the actor's
+   * `intrinsic size` — so a drawn actor's click box and collision box are the
+   * size of the picture without anything inspecting pixels.
+   *
+   * ONE PER KIND. A second `define drawing` in one file would be two answers to
+   * "what does this look like", and the block is a root that cannot be
+   * duplicated meaningfully; the last one declared wins rather than an
+   * arbitrary one, which is at least the one the author saw last.
+   */
+  defineDrawing(width, height, run) {
+    this.drawing = {
+      width,
+      height,
+      run: (actor, pen) => run(actor, pen)
+    };
+    return this;
+  }
+  /** The picture this kind describes for itself, for the World to run. */
+  get ownDrawing() {
+    return this.drawing;
   }
   /** Respond to an event raised for this actor. */
   on(event, handler) {
@@ -2017,10 +3693,13 @@ var ActorBuilder = class {
    *   id; anything omitted falls back to that parameter's own default
    */
   addEffect(path, document, values) {
-    if (this.effects.some((effect) => effect.path === path)) {
+    const spec = values ? { path, document, values } : { path, document };
+    const at = this.effects.findIndex((effect) => effect.path === path);
+    if (at >= 0) {
+      this.effects[at] = spec;
       return this;
     }
-    this.effects.push(values ? { path, document, values } : { path, document });
+    this.effects.push(spec);
     return this;
   }
   /**
@@ -2057,6 +3736,14 @@ function each(value, body) {
   for (const actor of all(value)) {
     body(actor);
   }
+}
+function firstWhere(actors, where) {
+  for (const actor of actors) {
+    if (where(actor)) {
+      return [actor];
+    }
+  }
+  return [];
 }
 function pushed(value, actor) {
   if (Array.isArray(value)) {
@@ -2163,10 +3850,13 @@ export {
   DEFAULT_FRAME_DELAY,
   DependencySet,
   EventQueue,
+  FOUNDATION_TRAIT_IDS,
   FrameChangedEvent,
   FrameProperty,
   IntrinsicSizeProperty,
+  LeftMapEvent,
   MoveAction,
+  OutsideMapQuery,
   PIXELS_PER_UNIT,
   PositionProperty,
   PositionalTrait,
@@ -2182,12 +3872,14 @@ export {
   SpriteCellOriginProperty,
   SpriteCellSizeProperty,
   SpriteProperty,
+  TEXT_ANCHORS,
   Trait,
   Vector,
   World,
   WorldBuilder,
   all,
   each,
+  firstWhere,
   frameDelay,
   one,
   parseAnimationFile,
