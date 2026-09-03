@@ -222,6 +222,7 @@ var RuleBuilder = class {
 };
 
 // src/engine/core/Vector.ts
+var RAD_TO_DEG = 180 / Math.PI;
 var DEG_TO_RAD = Math.PI / 180;
 var Vector = class _Vector {
   x;
@@ -270,6 +271,32 @@ var Vector = class _Vector {
   length() {
     return Math.hypot(this.x, this.y);
   }
+  /**
+   * Which way this points, in degrees — 0 is to the right, 90 is DOWN.
+   *
+   * Clockwise, because y is down: the same convention `rotate` turns in and
+   * the same one an actor's `rotation` is drawn with, so the angle of a
+   * velocity IS the rotation that faces along it. That is the whole reason
+   * this exists — "point at the thing you are moving toward" was not sayable,
+   * because nothing anywhere turned a direction into an angle.
+   *
+   * A zero vector points nowhere; `Math.atan2(0, 0)` is 0, and 0 (to the
+   * right) is as good an answer as any for a question with none.
+   */
+  angle() {
+    return Math.atan2(this.y, this.x) * RAD_TO_DEG;
+  }
+  /**
+   * The vector pointing `degrees` round, this long — `angle`'s inverse.
+   *
+   * The other half of the same missing pair: `angle` reads a direction off a
+   * vector, and this makes one from a direction, which is what "thrust the way
+   * I am facing" needs.
+   */
+  static fromAngle(degrees, length = 1) {
+    const r = degrees * DEG_TO_RAD;
+    return new _Vector(Math.cos(r) * length, Math.sin(r) * length);
+  }
   equals(other) {
     return this.x === other.x && this.y === other.y;
   }
@@ -305,7 +332,15 @@ var SPATIAL = {
   scale: "scale",
   rotation: "rotation",
   skew: "skew",
-  intrinsicSize: "intrinsicSize"
+  intrinsicSize: "intrinsicSize",
+  // The event every actor gets for nothing: it was placed in a world. Here
+  // rather than only in the rule because `World.place` is what raises it, and
+  // core reaches the rule's members by id (`World.renderSnapshot` does the
+  // same for the transform).
+  created: "created",
+  // …and the other end of the same fact. Not raised by `clear world`, which
+  // empties a world rather than removing anybody from it (`rules/spatial`).
+  removed: "removed"
 };
 var APPEARANCE = {
   rule: "animation",
@@ -316,6 +351,11 @@ var APPEARANCE = {
   spriteCellOrigin: "spriteCellOrigin",
   spriteCellSize: "spriteCellSize",
   animation: "animation",
+  // How solid the actor is drawn, 0 to 1. On APPEARANCE and not on the
+  // positional foundation, which is the line a Camera falls on: it has a
+  // position and no appearance (specs/VIEWPORT.md), and a camera you could
+  // fade would be a camera nobody draws.
+  opacity: "opacity",
   frame: "frame",
   elapsed: "elapsed",
   done: "done",
@@ -323,14 +363,210 @@ var APPEARANCE = {
   restart: "restart"
 };
 
+// src/engine/core/actorValue.ts
+var LazyActors = class {
+  walk;
+  constructor(walk2) {
+    this.walk = walk2;
+  }
+  [Symbol.iterator]() {
+    return this.walk();
+  }
+};
+function all(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  return value instanceof LazyActors ? [...value] : [value];
+}
+function each(value, body) {
+  for (const actor of all(value)) {
+    body(actor);
+  }
+}
+function firstWhere(actors, where) {
+  for (const actor of actors) {
+    if (where(actor)) {
+      return [actor];
+    }
+  }
+  return [];
+}
+function pushed(value, actor) {
+  if (Array.isArray(value)) {
+    value.push(actor);
+    return value;
+  }
+  if (value instanceof LazyActors) {
+    return [...all(value), actor];
+  }
+  return value ? [value, actor] : [actor];
+}
+function one(value) {
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  if (value instanceof LazyActors) {
+    return value[Symbol.iterator]().next().value;
+  }
+  return value;
+}
+function walk(value) {
+  if (value instanceof LazyActors || Array.isArray(value)) {
+    return value;
+  }
+  return typeof value[Symbol.iterator] === "function" ? value : [value];
+}
+function held(value) {
+  return value instanceof LazyActors ? value : [...walk(value)];
+}
+function filtered(value, where) {
+  const source = held(value);
+  return new LazyActors(function* () {
+    for (const actor of source) {
+      if (where(actor)) {
+        yield actor;
+      }
+    }
+  });
+}
+function ordered(value, key, descending = false) {
+  const keyed = [...walk(value)].map((actor) => ({ actor, key: key(actor) }));
+  keyed.sort(
+    (left, right) => descending ? right.key - left.key : left.key - right.key
+  );
+  return keyed.map((entry) => entry.actor);
+}
+function taken(value, count) {
+  const source = held(value);
+  return new LazyActors(function* () {
+    if (count <= 0) {
+      return;
+    }
+    let taken2 = 0;
+    for (const actor of source) {
+      yield actor;
+      if (++taken2 >= count) {
+        return;
+      }
+    }
+  });
+}
+function extreme(value, key, most = false) {
+  let best;
+  let bestKey = 0;
+  for (const actor of walk(value)) {
+    const candidate = key(actor);
+    if (!Number.isFinite(candidate)) {
+      continue;
+    }
+    if (best === void 0 || (most ? candidate > bestKey : candidate < bestKey)) {
+      best = actor;
+      bestKey = candidate;
+    }
+  }
+  return best ? [best] : [];
+}
+function firstOf(value) {
+  for (const actor of walk(value)) {
+    return [actor];
+  }
+  return [];
+}
+
+// src/engine/core/lists.ts
+var LIST_TYPES = /* @__PURE__ */ new Set(["numbers", "words", "vectors"]);
+var isListType = (type) => LIST_TYPES.has(type);
+function asList(type, value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return type === "vectors" ? value.map((item) => Vector.from(item)) : [...value];
+}
+var items = (value) => Array.isArray(value) ? value : [];
+var VERSION = Symbol("list version");
+function touched(list) {
+  const stamped = list;
+  stamped[VERSION] = (stamped[VERSION] ?? 0) + 1;
+}
+function versionOf(list) {
+  return list[VERSION] ?? 0;
+}
+function addToFront(list, value) {
+  if (Array.isArray(list)) {
+    list.unshift(value);
+    touched(list);
+    return list;
+  }
+  return [value];
+}
+function takeFirst(list) {
+  if (!Array.isArray(list)) {
+    return void 0;
+  }
+  const first = list.shift();
+  touched(list);
+  return first;
+}
+function addTo(list, value) {
+  if (Array.isArray(list)) {
+    list.push(value);
+    touched(list);
+    return list;
+  }
+  return [value];
+}
+var indexes = /* @__PURE__ */ new WeakMap();
+function keyFor(value) {
+  if (typeof value === "number" || typeof value === "string") {
+    return `${typeof value}:${value}`;
+  }
+  const place = value;
+  return place && typeof place === "object" && typeof place.x === "number" && typeof place.y === "number" ? `place:${place.x},${place.y}` : void 0;
+}
+function listHas(list, value) {
+  if (!Array.isArray(list)) {
+    return items(list).some((item) => sameValue(item, value));
+  }
+  const wanted = keyFor(value);
+  if (wanted === void 0) {
+    return list.some((item) => sameValue(item, value));
+  }
+  const version = versionOf(list);
+  let index = indexes.get(list);
+  if (!index || index.version !== version) {
+    const keys = /* @__PURE__ */ new Set();
+    for (const item of list) {
+      const key = keyFor(item);
+      if (key === void 0) {
+        return list.some((item_) => sameValue(item_, value));
+      }
+      keys.add(key);
+    }
+    index = { version, keys };
+    indexes.set(list, index);
+  }
+  return index.keys.has(wanted);
+}
+function sameValue(one2, other) {
+  if (one2 === other) {
+    return true;
+  }
+  const place = (value) => typeof value === "object" && value !== null && typeof value.x === "number" && typeof value.y === "number" ? value : void 0;
+  const a = place(one2);
+  const b = place(other);
+  return a !== void 0 && b !== void 0 && a.x === b.x && a.y === b.y;
+}
+var lastOf = (list) => items(list)[items(list).length - 1];
+
 // src/engine/core/traits.ts
 var DependencySet = class {
   getDeps;
   keyOf;
   entries = /* @__PURE__ */ new Map();
-  constructor(getDeps, keyOf) {
+  constructor(getDeps, keyOf2) {
     this.getDeps = getDeps;
-    this.keyOf = keyOf;
+    this.keyOf = keyOf2;
   }
   /** Add `item`. `explicit` false marks it as pulled in by a dependent. */
   add(item, explicit = true) {
@@ -401,16 +637,20 @@ var coerce = (property, value) => {
   if (property.type === "vector" || property.type === "point") {
     return Vector.from(value);
   }
+  if (isListType(property.type)) {
+    return asList(property.type, value);
+  }
   if (property.type === "actors" || property.type === "actor") {
     const isActor = (candidate) => typeof candidate === "object" && candidate !== null && "traits" in candidate;
+    const held2 = value instanceof LazyActors ? all(value) : value;
     if (property.type === "actor") {
-      const one2 = Array.isArray(value) ? value[0] : value;
+      const one2 = Array.isArray(held2) ? held2[0] : held2;
       return isActor(one2) ? [one2] : [];
     }
-    if (Array.isArray(value)) {
-      return [...value];
+    if (Array.isArray(held2)) {
+      return [...held2];
     }
-    return isActor(value) ? [value] : [];
+    return isActor(held2) ? [held2] : [];
   }
   return value;
 };
@@ -518,6 +758,26 @@ var Traited = class {
   /** The traits in play, dependencies included. */
   traits() {
     return this.membership.items();
+  }
+  /**
+   * The properties this thing has that no trait declared — its OWN.
+   *
+   * `traits()` is how everything else asks what an actor carries, and it
+   * cannot answer for these: a `define property` invents no trait, on purpose
+   * (`ActorBuilder.defineProperty`). So anything walking traits to find out
+   * what may be configured missed them entirely — the map editor's inspector
+   * showed none of them, and a map placement carrying one was dropped in
+   * silence at load.
+   *
+   * Read off the STORE rather than kept in a second list, because the store is
+   * already the answer to "what does this have a slot for": an own property's
+   * slot comes from the override every instance is built with, and `ownerKind`
+   * is what says a property came from a builder rather than a trait.
+   */
+  ownProperties() {
+    return [...this.store.keys()].filter(
+      (property) => property.ownerKind !== void 0
+    );
   }
 };
 
@@ -712,8 +972,21 @@ var CommandPen = class {
       ...paint.stroke === void 0 ? paint.fill === void 0 ? {} : { stroke: paint.fill } : { stroke: paint.stroke }
     });
   }
-  text(text, x, y, size, anchor) {
-    this.commands.push({ op: "text", text, x, y, size, anchor, ...this.paint() });
+  text(text, x, y, size, anchor, wrapWidth) {
+    this.commands.push({
+      op: "text",
+      text,
+      x,
+      y,
+      size,
+      anchor,
+      // Absent rather than zero when there is no wrapping, because the command
+      // list is a drawing's IDENTITY (`drawingKey`): a key carrying `0` for
+      // every unwrapped line would differ from every drawing made before this
+      // existed, and re-rasterize the lot.
+      ...wrapWidth !== void 0 && wrapWidth > 0 ? { wrapWidth } : {},
+      ...this.paint()
+    });
   }
   image(sprite, x, y, cell) {
     this.commands.push({ op: "image", sprite, x, y, ...cell ? { cell } : {} });
@@ -912,6 +1185,7 @@ var Scheduler = class {
   /** Run every step in order, once, for this tick. */
   run(world, delta) {
     for (const step of this.ordered) {
+      world.beginStep();
       const run = step.run;
       run(world, delta);
     }
@@ -1020,6 +1294,65 @@ function requireAnchor(step, anchor, index) {
   }
 }
 
+// src/engine/core/spatialIndex.ts
+var CELL = 64;
+var keyOf = (column, row) => (
+  // A row is offset into the top half of a 32-bit pair; the map is sparse, so
+  // this only has to be collision-free over the range a world spans.
+  (row & 65535) << 16 | column & 65535
+);
+var SpatialIndex = class {
+  buckets = /* @__PURE__ */ new Map();
+  /** Put an actor in the bucket its middle falls in. */
+  add(actor, at) {
+    const key = keyOf(Math.floor(at.x / CELL), Math.floor(at.y / CELL));
+    const bucket = this.buckets.get(key);
+    if (bucket) {
+      bucket.push(actor);
+    } else {
+      this.buckets.set(key, [actor]);
+    }
+  }
+  /**
+   * Every actor whose middle is within `radius` of `(x, y)`.
+   *
+   * Exact, not a candidate list: the buckets narrow it and the distance test
+   * decides, so a caller never has to know this is a grid at all.
+   *
+   * Squared distances throughout — a square root per actor, to compare against
+   * a number that could have been squared once, is the sort of arithmetic that
+   * only shows up when there are a thousand of them.
+   */
+  near(x, y, radius, positionOf) {
+    const found = [];
+    if (!(radius >= 0)) {
+      return found;
+    }
+    const reach = radius * radius;
+    const from = Math.floor((x - radius) / CELL);
+    const to = Math.floor((x + radius) / CELL);
+    const top = Math.floor((y - radius) / CELL);
+    const bottom = Math.floor((y + radius) / CELL);
+    for (let row = top; row <= bottom; row++) {
+      for (let column = from; column <= to; column++) {
+        const bucket = this.buckets.get(keyOf(column, row));
+        if (!bucket) {
+          continue;
+        }
+        for (const actor of bucket) {
+          const at = positionOf(actor);
+          const dx = at.x - x;
+          const dy = at.y - y;
+          if (dx * dx + dy * dy <= reach) {
+            found.push(actor);
+          }
+        }
+      }
+    }
+    return found;
+  }
+};
+
 // src/engine/core/World.ts
 var slotValues = (layer, slot) => ({
   layer,
@@ -1028,7 +1361,15 @@ var slotValues = (layer, slot) => ({
   repeat: slot.repeat
 });
 var DEFAULT_BACKDROP_COLOR = "#101020";
-var coerce2 = (property, value) => property.type === "vector" || property.type === "point" ? Vector.from(value) : value;
+var coerce2 = (property, value) => {
+  if (property.type === "vector" || property.type === "point") {
+    return Vector.from(value);
+  }
+  if (isListType(property.type)) {
+    return asList(property.type, value);
+  }
+  return value;
+};
 var CameraCollection = class {
   list;
   constructor(list) {
@@ -1072,10 +1413,28 @@ var ActorCollection = class {
   inLayer(layer) {
     return this.list.filter((actor) => actor.layer === layer);
   }
+  /**
+   * A COPY, like the three above, and for the reason they give.
+   *
+   * This was the live array's iterator, which made the collection's one
+   * un-copied exit the one a loop actually walks (`blockly/domainBlocks`'s
+   * `actorSource` emits `world.actors` for a loop over `all actors`). Both ways
+   * that goes wrong are reachable from blocks:
+   *
+   *   - a body that ADDS walks what it added, so `for each actor … do
+   *     ⟨add actor⟩` never returns — a hung frame, not a wrong answer;
+   *   - a body that REMOVES skips the next actor every time, because
+   *     `removeActor` splices, so `for each actor … do ⟨remove actor⟩` removes
+   *     half of them and says nothing.
+   *
+   * The second is the one worth the copy: "remove everything" is a sentence a
+   * learner writes, and half-working is worse than failing.
+   */
   [Symbol.iterator]() {
-    return this.list[Symbol.iterator]();
+    return [...this.list][Symbol.iterator]();
   }
 };
+var STOP_ALL_SOUNDS = Symbol("stop all sounds");
 var World = class {
   id;
   name;
@@ -1086,6 +1445,38 @@ var World = class {
   );
   store = /* @__PURE__ */ new Map();
   actorList = [];
+  /**
+   * How many actors are in `actorList` under each id — the index that makes
+   * {@link hasActor} a lookup rather than a scan.
+   *
+   * A COUNT and not the actor, because the list has never promised ids are
+   * unique: `addActor(template, …)` goes through {@link resolveInstanceId} and
+   * cannot collide, but the overload that places an actor somebody else built
+   * takes whatever id it was given. A map to the actor would have to choose
+   * which of two duplicates it held, and deleting one would leave `hasActor`
+   * lying about the other. A count cannot: it is `some(…)` with the scan taken
+   * out, and it answers the same for every input.
+   *
+   * WHY IT IS WORTH AN INDEX AT ALL: every `add actor` block passes its own
+   * block id, so placing n of them from one block probes `id`, `id#2`, `id#3` …
+   * — n²/2 probes, each of which WAS a scan of the whole list. `repeat 1000
+   * times` cost 636ms of arithmetic before a single frame was drawn, and the
+   * lesson that asks a learner to find where their machine gives out
+   * (`simulation/many`) was measuring this instead.
+   */
+  actorsById = /* @__PURE__ */ new Map();
+  /**
+   * The ordinal {@link resolveInstanceId} should try FIRST for a base id.
+   *
+   * Without it the n-th actor from one block counts up from 2 again, so a
+   * `repeat` of n costs n²/2 probes. It is a hint and not an answer — the
+   * candidate is still checked — so the only thing it changes is where the
+   * counting starts, and the only thing it gives up is REUSING an ordinal
+   * freed by a removal. `bullet#5` staying spent after `bullet#5` dies is the
+   * better answer anyway: an id that comes back refers to two different things
+   * over one run.
+   */
+  nextOrdinal = /* @__PURE__ */ new Map();
   // Not readonly: an actor KIND can contribute per-frame steps of its own, and
   // a kind is not known until one of its actors is placed (`useActorKind`).
   scheduler;
@@ -1119,6 +1510,12 @@ var World = class {
    * it is NaN, and nothing throws.
    */
   bounds = new Vector(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+  /**
+   * How much of the world is on screen at once, in pixels — the game's native
+   * resolution. Ten tiles square unless the world says otherwise
+   * (`setViewSize`).
+   */
+  view = new Vector(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
   // Game seconds since the first tick — see `time`. Advanced by `tick` and by
   // nothing else, so a world nobody ticks stays at zero however long it exists.
   elapsed = 0;
@@ -1167,6 +1564,8 @@ var World = class {
   // Rule steps read it through `isKeyDown`; keys carry OUR names — 'left arrow',
   // 'a', 'space' — which the driver translates the DOM's into (core/keys).
   keys = /* @__PURE__ */ new Set();
+  /** Actor templates by the module path a map names them with (`define`). */
+  types = /* @__PURE__ */ new Map();
   // The previous tick's pressed set, so a rule step can detect rising/falling
   // edges (a key *just* pressed or released) rather than only the held state.
   // Advanced at the end of each `tick`.
@@ -1267,7 +1666,21 @@ var World = class {
    */
   leaving = /* @__PURE__ */ new Set();
   /** Whether a tick is running, which is what makes removal deferred. */
-  ticking = false;
+  inTick = false;
+  /**
+   * Whether the world is inside a frame right now.
+   *
+   * Which is the same as "a handler is running": handlers are flushed inside
+   * `tick`. `WorldBuilder.act` asks, to tell an action that is part of what the
+   * world IS from one that merely happened while it ran.
+   */
+  get ticking() {
+    return this.inTick;
+  }
+  /** Sounds raised since the driver last drained, in the order raised. */
+  queuedSounds = [];
+  /** The track playing, or undefined for silence (specs/SOUND.md). */
+  track;
   /**
    * Place an actor, or make one from a template and place that.
    *
@@ -1311,10 +1724,11 @@ var World = class {
     if (explicitId === void 0) {
       return `${template.id}-${crypto.randomUUID()}`;
     }
-    let ordinal = 2;
+    let ordinal = this.nextOrdinal.get(base) ?? 2;
     while (this.hasActor(`${base}#${ordinal}`)) {
       ordinal += 1;
     }
+    this.nextOrdinal.set(base, ordinal + 1);
     return `${base}#${ordinal}`;
   }
   /**
@@ -1390,7 +1804,22 @@ var World = class {
       }
     }
     this.actorList.push(actor);
+    this.actorsById.set(actor.id, (this.actorsById.get(actor.id) ?? 0) + 1);
+    const created = this.spatialEvent(SPATIAL.created);
+    if (created) {
+      this.emit(created, actor);
+    }
     return actor;
+  }
+  /**
+   * One of the Spatial rule's events, if that rule is in play.
+   *
+   * Absent for a world built without the foundation, which is a world with no
+   * positions in it — nothing to raise the event on and nothing to hear it.
+   */
+  spatialEvent(id) {
+    const spatial = this.membership.items().find((one2) => one2.id === SPATIAL.rule);
+    return spatial?.events?.[id];
   }
   /** The cameras this world holds. Never empty; the default is among them. */
   get cameras() {
@@ -1414,7 +1843,10 @@ var World = class {
    */
   defineCamera(init) {
     if (!this.cameraList.some((camera) => camera.id === init.id)) {
-      const camera = makeCamera(init);
+      const camera = makeCamera({
+        ...init,
+        position: init.position ?? new Vector(this.view.x / 2, this.view.y / 2)
+      });
       camera.world = this;
       this.cameraList.push(camera);
     }
@@ -1501,7 +1933,7 @@ var World = class {
     if (!target || !this.actorList.includes(target)) {
       return false;
     }
-    if (this.ticking) {
+    if (this.inTick) {
       this.leaving.add(target);
       return true;
     }
@@ -1510,16 +1942,114 @@ var World = class {
   }
   /** Actually take it out: off the list, and no longer pointing at this world. */
   detach(actor) {
+    const removed = this.spatialEvent(SPATIAL.removed);
+    if (removed && this.actorList.includes(actor)) {
+      this.emit(removed, actor);
+    }
     const index = this.actorList.indexOf(actor);
     if (index >= 0) {
       this.actorList.splice(index, 1);
+      const left = (this.actorsById.get(actor.id) ?? 1) - 1;
+      if (left > 0) {
+        this.actorsById.set(actor.id, left);
+      } else {
+        this.actorsById.delete(actor.id);
+      }
     }
     actor.world = void 0;
     actor.layer = void 0;
   }
   /** Whether an actor with `id` is already in this world. */
   hasActor(id) {
-    return this.actorList.some((actor) => actor.id === id);
+    return this.actorsById.has(id);
+  }
+  /** The index, and the moment it was built for. */
+  index;
+  indexAt = -1;
+  indexMark = -1;
+  indexCount = -1;
+  /**
+   * Which STEP is running, counted from the start of the world.
+   *
+   * The stamp the spatial index is kept against, and the reason it is a step
+   * rather than a frame: a step is exactly the unit of "somebody may have moved
+   * things". Two questions inside one step get one index — which is what makes
+   * a search affordable, since a flood asks hundreds in a row — and the first
+   * question in the next step gets a fresh one, which is what makes a collision
+   * test right, since it runs after everything has moved.
+   */
+  stepMark = 0;
+  /** Called by the {@link Scheduler} as each step begins. */
+  beginStep() {
+    this.stepMark += 1;
+  }
+  /**
+   * Every actor whose middle is within `radius` of a place.
+   *
+   * The world's own spatial question, answered through a grid of buckets
+   * (`core/spatialIndex`) rather than by measuring every actor. From a PLACE
+   * rather than from an actor, which is the whole reason it is here and not a
+   * list operation: a search asking whether a square is clear has no actor to
+   * ask about, and neither has "what is near where I am going".
+   *
+   * REBUILT ONCE PER STEP THAT ASKS, and only for the steps that ask. A step is
+   * the unit of "somebody may have moved things", so a question asked after a
+   * step that moved everything gets a fresh answer, and four hundred questions
+   * inside one step get one index — which is the difference between a search
+   * being affordable and being a frozen frame.
+   *
+   * It costs a rebuild per querying step, which is an O(n) pass: measured at a
+   * tenth of a millisecond for a thousand actors, against the O(n²) it exists
+   * to replace. Two consumers asking in two different phases are not building
+   * the same index twice — they are asking about two different moments, and one
+   * shared answer would be wrong for one of them.
+   *
+   * BEFORE THE FIRST STEP there is no such moment, so the stamp falls back to
+   * the clock and the population — a world being described is one where nothing
+   * is running, and the questions asked there are about what has been placed.
+   *
+   * An empty list if nothing has a position: a world with no Spatial rule is a
+   * world where "near" has no meaning, which is not an error to raise at a
+   * learner mid-game.
+   */
+  actorsNear(at, radius, only) {
+    const found = this.positional();
+    if (!found) {
+      return [];
+    }
+    const { trait, position } = found;
+    const positionOf = (actor) => actor.get(position);
+    if (!this.index || this.indexMark !== this.stepMark || this.indexAt !== this.elapsed || this.indexCount !== this.actorList.length) {
+      const index = new SpatialIndex();
+      for (const actor of this.actorList) {
+        if (actor.has(trait)) {
+          index.add(actor, positionOf(actor));
+        }
+      }
+      this.index = index;
+      this.indexMark = this.stepMark;
+      this.indexAt = this.elapsed;
+      this.indexCount = this.actorList.length;
+    }
+    const near = this.index.near(at?.x ?? 0, at?.y ?? 0, radius, positionOf);
+    if (only?.type !== void 0) {
+      return near.filter((actor) => actor.type === only.type);
+    }
+    if (only?.trait) {
+      return near.filter((actor) => actor.has(only.trait));
+    }
+    return near;
+  }
+  /**
+   * The positional trait and its `position`, resolved through the membership
+   * the way `renderSnapshot` resolves them — core speaking the Spatial rule's
+   * vocabulary without importing it (`core/spatialKeys`).
+   */
+  positional() {
+    const spatial = this.membership.items().find((r) => r.id === SPATIAL.rule);
+    const trait = spatial?.traits[SPATIAL.trait];
+    const position = trait?.properties[SPATIAL.position];
+    return trait && position ? { trait, position } : void 0;
   }
   /**
    * How many actors are in the world.
@@ -1638,7 +2168,38 @@ var World = class {
    * settable later changes nothing that asks.
    */
   viewSize() {
-    return new Vector(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+    return new Vector(this.view.x, this.view.y);
+  }
+  /**
+   * Say how much of the world is on screen at once, in TILES.
+   *
+   * The view was a constant — ten tiles square, the size the first levels were
+   * built at — and the constant is still the default, so a world that says
+   * nothing looks exactly as it did. What it could not say was the other kind
+   * of level: a room 26 by 16 that is meant to be taken in at a glance, where
+   * a camera panning over it would be hiding the puzzle rather than following
+   * the action.
+   *
+   * TILES, for the reason `setMapSize` gives: a level is authored in tiles and
+   * read in pixels, so each end uses its own unit and the conversion happens
+   * here.
+   *
+   * IT IS THE NATIVE RESOLUTION, not a zoom. The driver sizes its canvas to
+   * this and the pane scales that up, so a bigger view is more of the world at
+   * the same tile size rather than the same world drawn smaller.
+   */
+  setViewSize(columns, rows) {
+    const was = this.view;
+    this.view = new Vector(
+      Math.max(0, Math.round(columns)) * TILE_SIZE || VIEWPORT_WIDTH,
+      Math.max(0, Math.round(rows)) * TILE_SIZE || VIEWPORT_HEIGHT
+    );
+    const middle = new Vector(this.view.x / 2, this.view.y / 2);
+    for (const camera of this.cameraList) {
+      if (camera.position.x === was.x / 2 && camera.position.y === was.y / 2) {
+        camera.position = middle;
+      }
+    }
   }
   /**
    * Say how big the world is, in TILES.
@@ -1683,6 +2244,97 @@ var World = class {
       Math.max(this.bounds.x, map.size.width * map.tile.width),
       Math.max(this.bounds.y, map.size.height * map.tile.height)
     );
+  }
+  /**
+   * Place the actors a Map describes.
+   *
+   * A world may load several — a level and a HUD, say. Loading is additive, so
+   * they stack in call order; `clearActors()` first to replace rather than add.
+   *
+   * IT WORKS WHILE THE GAME RUNS, which is what makes a second room possible:
+   * `clear world` then `load map ⟨Room 2⟩` in a handler is a door. It lived on
+   * `WorldBuilder` alone until then, and a project could describe as many maps
+   * as it liked so long as it never wanted to be in a different one.
+   *
+   * `layer` puts every actor the map describes into one layer, which is what
+   * makes a HUD a HUD: the map is an ordinary map, and the layer it is loaded
+   * into is the whole of what makes it an interface (specs/VIEWPORT.md).
+   */
+  loadMap(map, layer) {
+    this.growToFit(map);
+    const lookup = this.propertyLookup();
+    const added = [];
+    const placed = /* @__PURE__ */ new Map();
+    const deferred = [];
+    for (const entry of map.actors) {
+      const builder = this.types.get(entry.type);
+      if (!builder) {
+        throw new Error(
+          `World '${this.id}': map references unregistered actor type '${entry.type}' (register it with define())`
+        );
+      }
+      const actor = builder.instantiate(
+        this.resolveInstanceId(builder, entry.id),
+        entry.type
+      );
+      const own = new Map(
+        actor.ownProperties().map((property) => [`${property.ownerId}.${property.id}`, property])
+      );
+      if (entry.id) {
+        placed.set(entry.id, actor);
+      }
+      for (const [ownerId, props] of Object.entries(entry.properties ?? {})) {
+        for (const [propId, value] of Object.entries(props)) {
+          const key = `${ownerId}.${propId}`;
+          const property = own.get(key) ?? lookup.get(key);
+          if (!property || !actor.hasProperty(property)) {
+            continue;
+          }
+          if (property.type === "actor" && typeof value === "string") {
+            deferred.push([actor, property, value]);
+            continue;
+          }
+          actor.set(property, value);
+        }
+      }
+      this.useActorKind(entry.type, builder);
+      this.addActor(actor, layer);
+      added.push(actor);
+    }
+    for (const [actor, property, id] of deferred) {
+      const target = placed.get(id);
+      if (target) {
+        actor.set(property, target);
+      }
+    }
+    return added;
+  }
+  /** Map `${ownerId}.${propId}` -> Property across the world's rules + traits. */
+  propertyLookup() {
+    const lookup = /* @__PURE__ */ new Map();
+    const add = (property) => lookup.set(`${property.ownerId}.${property.id}`, property);
+    for (const rule3 of this.activeRules()) {
+      for (const property of Object.values(rule3.properties)) {
+        add(property);
+      }
+      for (const trait of Object.values(rule3.traits)) {
+        for (const property of Object.values(trait.properties)) {
+          add(property);
+        }
+      }
+    }
+    return lookup;
+  }
+  /**
+   * Register an actor template under the name a Map refers to it by.
+   *
+   * A map is JSON: it names a kind by its module path and nothing more, so
+   * something has to hold the templates those names mean. `WorldBuilder.define`
+   * is the same call one level up, and hands its own over before it loads.
+   */
+  define(type, template) {
+    this.types.set(type, template);
+    return this;
   }
   /** Replace the pressed-key set (driver calls this each frame before `tick`). */
   setInput(keys) {
@@ -1775,13 +2427,13 @@ var World = class {
   }
   /** Advance the simulation by `delta` seconds. */
   tick(delta) {
-    this.ticking = true;
+    this.inTick = true;
     this.elapsed += delta;
     try {
       this.scheduler.run(this, delta);
       this.events.flush(this);
     } finally {
-      this.ticking = false;
+      this.inTick = false;
       for (const actor of this.leaving) {
         this.detach(actor);
       }
@@ -1884,6 +2536,72 @@ var World = class {
   setBackground(sprite, layer = DEFAULT_LAYER_ID) {
     this.backdropAt(layer).sprite = sprite;
     return this;
+  }
+  // ── Sound (specs/SOUND.md) ──────────────────────────────────────────────
+  //
+  // Two things with opposite mechanisms, which is why they are two methods and
+  // not one. A one-shot is a MOMENT: it goes on a queue the driver drains after
+  // each tick, and it is NOT in the snapshot, because a moment that survived
+  // into the hot-reload baseline would be compared, found different, and
+  // replayed. Music is STATE: it is in the snapshot and patches in place, the
+  // way the sky does.
+  /**
+   * Play a sound once — `play sound ⟨pop⟩`.
+   *
+   * Queued rather than played, because the engine has no speakers and is not
+   * going to grow any: it says what happened, and the driver decides what that
+   * sounds like. The same division `renderSnapshot` makes about pictures.
+   *
+   * Repeats are KEPT. Two coins collected in one tick are two pops, and a queue
+   * that deduplicated would make a busy frame quieter than a calm one.
+   */
+  playSound(sound) {
+    this.queuedSounds.push(sound);
+    return this;
+  }
+  /**
+   * Stop everything making a noise — `stop all sounds`.
+   *
+   * IN THE QUEUE, not beside it, because a tick is ordered: `stop all sounds`
+   * and then `play sound ⟨pop⟩` is a pop, and a flag read after the queue was
+   * drained would make it silence. So this is a cue like any other and the
+   * driver reads them in order (`runtime/driver/sound`).
+   *
+   * The track is state and not a moment, so it is cleared HERE as well: a
+   * world that went on reporting music nobody can hear would start it again
+   * the moment anything else changed.
+   */
+  stopSounds() {
+    this.queuedSounds.push(STOP_ALL_SOUNDS);
+    this.track = void 0;
+    return this;
+  }
+  /**
+   * Take the sounds raised since the last call, emptying the queue.
+   *
+   * The driver calls this after `tick`. A world nobody drains — one built to be
+   * compared against, or to draw a thumbnail with — accumulates and is thrown
+   * away with its queue, which is what "building a world drops its sounds"
+   * comes to in practice.
+   */
+  drainSounds() {
+    return this.queuedSounds.splice(0, this.queuedSounds.length);
+  }
+  /**
+   * Play a track, replacing whatever was playing — `set music to ⟨theme⟩`.
+   *
+   * `undefined` is silence and is how it stops, so there is one method and not
+   * two here. The PALETTE has two — `set music to` and `stop music` — because
+   * a menu row reading "(none)" is not where anybody looks for a way to stop
+   * something (`domainBlocks`).
+   */
+  setMusic(track) {
+    this.track = track;
+    return this;
+  }
+  /** The track playing, or undefined for silence. */
+  music() {
+    return this.track;
   }
   /**
    * Slide a layer's background, in world pixels.
@@ -2182,6 +2900,7 @@ var World = class {
     const appearance = this.membership.items().find((r) => r.id === APPEARANCE.rule);
     const appearanceTrait = appearance?.traits[APPEARANCE.trait];
     const spriteProp = appearanceTrait?.properties[APPEARANCE.sprite];
+    const opacityProp = appearanceTrait?.properties[APPEARANCE.opacity];
     const cellOriginProp = appearanceTrait?.properties[APPEARANCE.spriteCellOrigin];
     const cellSizeProp = appearanceTrait?.properties[APPEARANCE.spriteCellSize];
     const animationProp = appearanceTrait?.properties[APPEARANCE.animation];
@@ -2224,7 +2943,7 @@ var World = class {
         return void 0;
       }
       const pen = new CommandPen();
-      drawing.run(actor, pen);
+      drawing.run(actor, pen, this);
       return {
         key: drawingKey(drawing.width, drawing.height, pen.commands),
         width: drawing.width,
@@ -2247,6 +2966,7 @@ var World = class {
         scaleY: scale.y,
         rotation: actor.get(rotationProp),
         skew: skewProp ? actor.get(skewProp) : 0,
+        opacity: opacityProp && appearanceTrait && actor.has(appearanceTrait) ? actor.get(opacityProp) : 1,
         frame: frameFor(actor),
         drawing: drawingFor(actor),
         effects: actor.effects(),
@@ -2266,7 +2986,7 @@ var World = class {
    * is ticking and it takes effect at once.
    */
   clearActors() {
-    if (this.ticking) {
+    if (this.inTick) {
       for (const actor of this.actorList) {
         this.leaving.add(actor);
       }
@@ -2277,6 +2997,8 @@ var World = class {
       actor.layer = void 0;
     }
     this.actorList.length = 0;
+    this.actorsById.clear();
+    this.nextOrdinal.clear();
   }
   /** Set a world-scoped property by its `${ruleId}.${propId}` path. */
   setWorldProperty(path, value) {
@@ -2345,6 +3067,7 @@ var World = class {
       world[`${property.ownerId}.${property.id}`] = this.get(property);
     }
     const actors = {};
+    const actorTraits = {};
     for (const actor of this.actorList) {
       const values = {};
       for (const trait of actor.traits()) {
@@ -2356,6 +3079,7 @@ var World = class {
         }
       }
       actors[actor.id] = values;
+      actorTraits[actor.id] = actor.traits().map((trait) => trait.id);
     }
     return {
       ruleIds: rules.map((rule3) => rule3.id).sort(),
@@ -2384,6 +3108,7 @@ var World = class {
       // By actor id so the list is stable, but NOT sorted within an actor:
       // handlers for one event run in registration order, so a reorder is a
       // real change and should read as one.
+      actorTraits,
       handlerIds: [...this.actorList].sort((left, right) => left.id < right.id ? -1 : 1).flatMap((actor) => actor.handlerIds().map((id) => `${actor.id}:${id}`)),
       // Sorted, like the id lists: the snapshot is compared by stringifying it,
       // so a stable order is what keeps an unchanged world comparing equal.
@@ -2415,6 +3140,9 @@ var World = class {
         (layer) => slotValues(layer.id, layer.foreground)
       ),
       clearColor: [...this.clearColor],
+      // The track, and not the one-shots: what is playing is state a patch can
+      // set, what already played is a moment (specs/SOUND.md).
+      ...this.track === void 0 ? {} : { music: this.track },
       world,
       actors
     };
@@ -2432,6 +3160,61 @@ function frameDelay(def, frame) {
   }
   return DEFAULT_FRAME_DELAY;
 }
+
+// src/engine/core/tween.ts
+var clamp012 = (value) => Math.min(1, Math.max(0, value));
+var CURVES = {
+  linear: (t) => t,
+  "ease-in": (t) => t * t * t,
+  "ease-out": (t) => 1 - (1 - t) ** 3,
+  "ease-in-out": (t) => t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2
+};
+var isTweenable = (value) => typeof value === "number" || value instanceof Vector;
+var tweenValue = (from, to, t) => {
+  if (typeof from === "number" && typeof to === "number") {
+    return from + (to - from) * t;
+  }
+  const start = from;
+  const end = to;
+  return new Vector(
+    start.x + (end.x - start.x) * t,
+    start.y + (end.y - start.y) * t
+  );
+};
+var advanceTween = (run, actor, delta) => {
+  run.elapsed += delta;
+  const t = run.duration > 0 ? clamp012(run.elapsed / run.duration) : 1;
+  const eased = CURVES[run.curve](t);
+  for (const step of run.steps) {
+    actor.set(step.property, tweenValue(step.from, step.to, eased));
+  }
+  return t >= 1;
+};
+var beginTween = (plan, actor) => {
+  const steps = [];
+  for (const step of plan.steps) {
+    const from = actor.get(step.property);
+    if (!isTweenable(from) || !isTweenable(step.to)) {
+      console.warn(
+        `The tween "${plan.id}" cannot move "${step.property.name ?? step.property.id}": there is no half way between two of those. That row is ignored.`
+      );
+      continue;
+    }
+    steps.push({ property: step.property, from, to: step.to });
+  }
+  return {
+    id: plan.id,
+    duration: plan.duration,
+    curve: plan.curve,
+    steps,
+    elapsed: 0
+  };
+};
+var tweenDisplaced = (displaced) => {
+  console.warn(
+    `The tween "${displaced.id}" was stopped: something else started moving a property it was moving. The newest one wins.`
+  );
+};
 
 // src/engine/core/watchProperty.ts
 function watchProperty(property, watcher) {
@@ -2526,6 +3309,36 @@ function outsideMapAt(actor, at) {
   const bounds = world.mapBounds();
   return at.x + half.x < 0 || at.y + half.y < 0 || at.x - half.x > bounds.x || at.y - half.y > bounds.y;
 }
+function within(value, of, distance) {
+  const centres = all(of);
+  const reach = Number.isFinite(distance) ? distance : -1;
+  const world = centres[0]?.world;
+  if (world && reach >= 0 && value === world.actors) {
+    return new LazyActors(function* () {
+      const seen = /* @__PURE__ */ new Set();
+      for (const centre of centres) {
+        for (const near of world.actorsNear(
+          centre.get(PositionProperty),
+          reach
+        )) {
+          if (!centres.includes(near) && !seen.has(near)) {
+            seen.add(near);
+            yield near;
+          }
+        }
+      }
+    });
+  }
+  return filtered(
+    value,
+    (actor) => !centres.includes(actor) && centres.some((centre) => gap(actor, centre) <= reach)
+  );
+}
+function gap(one2, other) {
+  const here = one2.get(PositionProperty);
+  const there = other.get(PositionProperty);
+  return Math.hypot(here.x - there.x, here.y - there.y);
+}
 var OutsideMapQuery = PositionalTrait.addQuery(
   "outsideMap",
   (actor) => outsideMapAt(actor, actor.get(PositionProperty)),
@@ -2546,6 +3359,29 @@ watchProperty(PositionProperty, (actor, previous, next) => {
     world.emit(LeftMapEvent, actor);
   }
 });
+var CreatedEvent = rule.addEvent(SPATIAL.created, {
+  name: "is created"
+});
+var RemovedEvent = rule.addEvent(SPATIAL.removed, {
+  name: "is removed"
+});
+var TweenFinishedEvent = rule.addEvent("tweenFinished", {
+  name: "a tween finishes"
+});
+var AdvanceTweensStep = rule.addStepIn(
+  "advanceTweens",
+  "adjust",
+  (world, delta) => {
+    for (const actor of world.actors.with(PositionalTrait)) {
+      for (const run of [...actor.tweens()]) {
+        if (advanceTween(run, actor, delta)) {
+          actor.stopTween(run);
+          world.emit(TweenFinishedEvent, actor, run.id);
+        }
+      }
+    }
+  }
+);
 var SpatialRule = rule.build();
 
 // src/engine/rules/animation.ts
@@ -2565,6 +3401,12 @@ var SpriteProperty = AppearanceTrait.addProperty(
   "string",
   "",
   { name: "sprite" }
+);
+var OpacityProperty = AppearanceTrait.addProperty(
+  APPEARANCE.opacity,
+  "number",
+  1,
+  { name: "opacity" }
 );
 var SpriteCellOriginProperty = AppearanceTrait.addProperty(
   APPEARANCE.spriteCellOrigin,
@@ -2856,6 +3698,32 @@ var WorldBuilder = class {
     return this.defer("on", event, handler);
   }
   /**
+   * Perform a world action. See {@link World.act}.
+   *
+   * THE METHOD THAT WAS NOT HERE, and the reason `add ⟨1⟩ to the score` under
+   * `define world` died at run time with `world.act is not a function`: a world
+   * action generates `world.act(…)`, `world` is this builder in a `.world`
+   * file's setup, and `worldContextExtension` saw a bound `world` and said
+   * nothing. The palette offered a block that could not run where it offered it
+   * (specs/PROGRESSION.md, "World actions in a world's setup").
+   *
+   * LOGGED ONLY WHEN THE WORLD IS NOT IN A FRAME, which is the same line `set`
+   * draws by another route. A `.world` file's handler closes over this builder
+   * too, so a score bumped on every click would otherwise append an entry per
+   * click for the life of the game, and replay every one of them into the next
+   * world made from this description. An action taken during a frame is a thing
+   * that HAPPENED; one taken while the description is still being written is
+   * part of what the world IS, and that is the one a fresh `instantiate()` — a
+   * check run — has to see again.
+   */
+  act(action, ...args) {
+    if (this.built?.ticking) {
+      this.built.act(action, ...args);
+      return this;
+    }
+    return this.defer("act", action, ...args);
+  }
+  /**
    * Set a world-scoped property. See {@link World.set}.
    *
    * COLLAPSED IN THE LOG rather than appended to it, alone among the deferred
@@ -2897,6 +3765,18 @@ var WorldBuilder = class {
     return this.getWorld().get(property);
   }
   /**
+   * What is near a place. See {@link World.actorsNear}.
+   *
+   * Forwarded rather than deferred, like `get` and for the same reason: it
+   * hands back a value out of the world instead of telling it something. And it
+   * has to be here at all because a `.world` file may ask — `load map`, then
+   * "is anything solid where this door opens" — which is a question about the
+   * actors the map just placed.
+   */
+  actorsNear(at, radius, only) {
+    return this.getWorld().actorsNear(at, radius, only);
+  }
+  /**
    * Play an effect across the whole viewport. See {@link World.addEffect}.
    *
    * The World counterpart to `ActorBuilder.addEffect`: that one filters one
@@ -2914,6 +3794,65 @@ var WorldBuilder = class {
   /** Draw an image behind everything (BACKGROUNDS.md). */
   setBackground(sprite, layer = DEFAULT_LAYER_ID) {
     return this.defer("setBackground", sprite, layer);
+  }
+  /**
+   * Play a sound once. See {@link World.playSound}.
+   *
+   * NOT deferred, alone among these, and that is the whole of "building a world
+   * drops its sounds" (specs/SOUND.md). The log is replayed into every world
+   * this description makes — a throwaway for a thumbnail, the `incoming` one a
+   * rebuild is compared against — so a logged one-shot would sound again every
+   * time the picker refreshed. It goes straight to the world instead, where the
+   * driver's next drain finds it or nothing does.
+   *
+   * ONE EDGE, and it is written down rather than guarded. `requireNoActors`
+   * DISCARDS a built world when a declaration arrives late and no actor has
+   * been placed yet, so a `play sound` followed by a `use animations` in the
+   * same setup body would queue into a world that is then thrown away. Not
+   * reachable from blocks: the generator emits every declaration in the world
+   * block's prologue and hoists the layers, so nothing in a body can precede
+   * one. If that ever stops being true, the fix is a pending list on the
+   * builder that `getWorld` flushes — deliberately not built now, because it is
+   * a second queue for a case nobody can reach.
+   */
+  playSound(sound) {
+    this.getWorld().playSound(sound);
+    return this;
+  }
+  /**
+   * Stop everything making a noise. See {@link World.stopSounds}.
+   *
+   * Straight to the world and NOT logged, for the reason `playSound` gives: it
+   * is a moment, and a moment in the log happens again every time this
+   * description makes a world.
+   *
+   * The track it clears is the RUNNING world's. A `set music to` in the same
+   * setup is logged and says what a world built from this description starts
+   * with, which is what it should say — "the music this world has" is a
+   * property of the description; "and now everything stops" is something that
+   * happened.
+   */
+  stopSounds() {
+    this.getWorld().stopSounds();
+    return this;
+  }
+  /**
+   * Play a track. See {@link World.setMusic}.
+   *
+   * Deferred and COLLAPSED, like `set`: music has one value and the last write
+   * wins, so replaying a hundred of them and replaying the last are the same
+   * world.
+   */
+  setMusic(track) {
+    const existing = this.log.find((call) => call.name === "setMusic");
+    if (existing) {
+      existing.args = [track];
+      if (this.built) {
+        apply(this.built, existing);
+      }
+      return this;
+    }
+    return this.defer("setMusic", track);
   }
   /** Draw an image in front of a layer's actors. See {@link World.setForeground}. */
   setForeground(sprite, layer = DEFAULT_LAYER_ID) {
@@ -3033,6 +3972,17 @@ var WorldBuilder = class {
   setMapSize(columns, rows) {
     return this.defer("setMapSize", columns, rows);
   }
+  /**
+   * Say how much of the world is on screen at once, in tiles. See
+   * {@link World.setViewSize}.
+   *
+   * Deferred and same-named for the reasons above: it is a statement about the
+   * world rather than about its construction, and one lost on the next rebuild
+   * would be a level that fits the screen until the moment it is reloaded.
+   */
+  setViewSize(columns, rows) {
+    return this.defer("setViewSize", columns, rows);
+  }
   /** Somewhere in the map, at random. See {@link World.randomPlace}. */
   randomPlace() {
     return this.getWorld().randomPlace();
@@ -3108,83 +4058,19 @@ var WorldBuilder = class {
     this.getWorld().clearActors();
   }
   /**
-   * Place the actors a Map describes.
+   * Place the actors a Map describes. See {@link World.loadMap}.
    *
-   * A world may load several — a level and a HUD, say. Loading is additive, so
-   * they stack in call order; `clear()` first to replace rather than add.
-   *
-   * `layer` puts every actor the map describes into one layer, which is what
-   * makes a HUD a HUD: the map is an ordinary map, and the layer it is loaded
-   * into is the whole of what makes it an interface (specs/VIEWPORT.md).
+   * Deferred like `clear world`'s, and for the same reason: one block calls
+   * whichever object it lands on. What this adds is the REGISTRY — a builder's
+   * `define` records templates before there is a world to record them in, so
+   * they are handed over here, on the way past.
    */
   loadMap(map, layer) {
     const world = this.getWorld();
-    world.growToFit(map);
-    const lookup = this.propertyLookup(world);
-    const added = [];
-    for (const entry of map.actors) {
-      const builder = this.types.get(entry.type);
-      if (!builder) {
-        throw new Error(
-          `World '${this.id}': map references unregistered actor type '${entry.type}' (register it with define())`
-        );
-      }
-      const actor = builder.instantiate(
-        this.resolveInstanceId(world, builder, entry.id),
-        entry.type
-      );
-      for (const [ownerId, props] of Object.entries(entry.properties ?? {})) {
-        for (const [propId, value] of Object.entries(props)) {
-          const property = lookup.get(`${ownerId}.${propId}`);
-          if (property && actor.hasProperty(property)) {
-            actor.set(property, value);
-          }
-        }
-      }
-      world.useActorKind(entry.type, builder);
-      world.addActor(actor, layer);
-      added.push(actor);
+    for (const [type, builder] of this.types) {
+      world.define(type, builder);
     }
-    return added;
-  }
-  /**
-   * Choose a unique instance id. The requested id (an explicit one, else the
-   * builder's) is used verbatim when free. On collision we keep as much of the
-   * caller's stability as they gave us: an explicit *base* (e.g. a Blockly
-   * block's id, which repeats when its `add` block runs in a loop) is kept and
-   * disambiguated with an ordinal (`base`, `base#2`, …), stable as long as the
-   * loop is; a bare template id (an anonymous repeat with no stable identity)
-   * falls back to a random `type-uuid`.
-   */
-  resolveInstanceId(world, builder, explicitId) {
-    const base = explicitId ?? builder.id;
-    if (!world.hasActor(base)) {
-      return base;
-    }
-    if (explicitId === void 0) {
-      return `${builder.id}-${crypto.randomUUID()}`;
-    }
-    let ordinal = 2;
-    while (world.hasActor(`${base}#${ordinal}`)) {
-      ordinal += 1;
-    }
-    return `${base}#${ordinal}`;
-  }
-  /** Map `${ownerId}.${propId}` -> Property across the world's rules + traits. */
-  propertyLookup(world) {
-    const lookup = /* @__PURE__ */ new Map();
-    const add = (property) => lookup.set(`${property.ownerId}.${property.id}`, property);
-    for (const rule3 of world.activeRules()) {
-      for (const property of Object.values(rule3.properties)) {
-        add(property);
-      }
-      for (const trait of Object.values(rule3.traits)) {
-        for (const property of Object.values(trait.properties)) {
-          add(property);
-        }
-      }
-    }
-    return lookup;
+    return world.loadMap(map, layer);
   }
   /**
    * The rules this world runs under: what it asked for, over the foundation.
@@ -3322,6 +4208,9 @@ var Actor = class {
   // Mutable because effects can be added and removed while the game runs — the
   // driver re-reads this list every frame through `renderSnapshot`.
   appliedEffects;
+  // Tweens in flight. Mutable for the reason `appliedEffects` is: they start
+  // and finish while the game runs, and a step reads this list every frame.
+  runningTweens = [];
   constructor(init) {
     this.id = init.id;
     this.type = init.type ?? init.id;
@@ -3448,6 +4337,60 @@ var Actor = class {
   traits() {
     return this.traited.traits();
   }
+  /**
+   * The properties this KIND declared for itself, which belong to no trait.
+   *
+   * Anything asking what an actor may be configured with has to ask both this
+   * and {@link traits} — `define property` invents no trait, so a walk over
+   * traits alone leaves these out (see `Traited.ownProperties`).
+   */
+  ownProperties() {
+    return this.traited.ownProperties();
+  }
+  /** The tweens in flight on this actor, in the order they were started. */
+  tweens() {
+    return this.runningTweens;
+  }
+  /**
+   * Start a tween, replacing any already moving a property it moves.
+   *
+   * LAST WRITE WINS, decided at the START rather than per frame. Two tweens
+   * left running over one property would both write it every tick and the
+   * winner would be whichever the list happened to reach second — a race
+   * decided by insertion order, which is no rule at all. Replacing means the
+   * newest instruction is the one in force, which is what "last write wins"
+   * is for.
+   *
+   * WHOLE RUNS, on any overlap at all. A tween moves a SET of properties, so
+   * two of them can half-collide — one fading, one moving-and-fading. Splitting
+   * the older run and keeping the half that does not clash is not behaviour
+   * anybody could predict; "two tweens cannot fight over a property, so the
+   * newer replaces the older" is one sentence.
+   *
+   * It is still worth saying out loud. Fading a thing out while fading it in
+   * is a real mistake, and silently honouring one of them looks like the other
+   * one never ran. `onReplace` is how the caller reports it — the engine has no
+   * console of its own and no opinion about where a warning belongs.
+   */
+  startTween(run, onReplace) {
+    const moving = new Set(run.steps.map((step) => step.property.id));
+    for (const held2 of [...this.runningTweens]) {
+      if (held2.steps.some((step) => moving.has(step.property.id))) {
+        onReplace?.(held2);
+        this.runningTweens.splice(this.runningTweens.indexOf(held2), 1);
+      }
+    }
+    this.runningTweens.push(run);
+    return this;
+  }
+  /** Drop a tween in flight, leaving the property wherever it reached. */
+  stopTween(run) {
+    const at = this.runningTweens.indexOf(run);
+    if (at >= 0) {
+      this.runningTweens.splice(at, 1);
+    }
+    return this;
+  }
   /** The effects played on this actor's image, in application order. */
   effects() {
     return this.appliedEffects;
@@ -3565,7 +4508,7 @@ var ActorBuilder = class {
     if (!trait) {
       return this;
     }
-    this.traits = this.traits.filter((held) => held?.id !== trait.id);
+    this.traits = this.traits.filter((held2) => held2?.id !== trait.id);
     return this;
   }
   /** Override a trait property's initial value for this actor. */
@@ -3637,6 +4580,37 @@ var ActorBuilder = class {
     return this.steps;
   }
   /**
+   * Declare a thing this KIND of actor does, by name — `define block`.
+   *
+   * The third of the same bargain `defineProperty` and `defineStep` make: state
+   * a kind carries, work it does every frame, and now a NAMED thing it does.
+   * A rule is still the answer when the behaviour is shared between kinds,
+   * elected, or answerable by `has trait`; this is for the case where the
+   * honest motivation is that the same six blocks were written twice.
+   *
+   * NOTHING IS REGISTERED, unlike a property, and that is worth saying: an
+   * action is stateless, and `Actor.act` simply applies the one it is handed —
+   * it does not look it up on the actor, or check that the actor has whatever
+   * declared it. So this makes an object and returns it, which the generated
+   * module binds to a `const` its handlers close over.
+   *
+   * It is a method rather than an object literal in generated code because the
+   * ownership should be stated somewhere a reader can find it, and because a
+   * `world.`/`actor.` call is what `builderSurface.test` can see.
+   */
+  defineAction(id, apply2, opts = {}) {
+    return {
+      id,
+      name: opts.name,
+      // The kind that declared it, which is what an error naming it has to
+      // say. There is no trait to point at, and `ownerId` is the only thing
+      // that says where it came from.
+      ownerId: this.id,
+      params: opts.params,
+      apply: apply2
+    };
+  }
+  /**
    * Declare what this KIND of actor looks like, by describing it.
    *
    * `defineStep`'s sibling and its opposite. A step is handed the world and may
@@ -3659,7 +4633,7 @@ var ActorBuilder = class {
     this.drawing = {
       width,
       height,
-      run: (actor, pen) => run(actor, pen)
+      run: (actor, pen, world) => run(actor, pen, world)
     };
     return this;
   }
@@ -3727,34 +4701,6 @@ var ActorBuilder = class {
 
 // src/engine/core/units.ts
 var PIXELS_PER_UNIT = 100;
-
-// src/engine/core/actorValue.ts
-function all(value) {
-  return Array.isArray(value) ? value : [value];
-}
-function each(value, body) {
-  for (const actor of all(value)) {
-    body(actor);
-  }
-}
-function firstWhere(actors, where) {
-  for (const actor of actors) {
-    if (where(actor)) {
-      return [actor];
-    }
-  }
-  return [];
-}
-function pushed(value, actor) {
-  if (Array.isArray(value)) {
-    value.push(actor);
-    return value;
-  }
-  return value ? [value, actor] : [actor];
-}
-function one(value) {
-  return Array.isArray(value) ? value[0] : value;
-}
 
 // src/engine/core/animationFile.ts
 function fail(message) {
@@ -3842,10 +4788,12 @@ export {
   Actor,
   ActorBuilder,
   AdvanceAnimationStep,
+  AdvanceTweensStep,
   AnimationEndedEvent,
   AnimationProperty,
   AnimationRule,
   AppearanceTrait,
+  CreatedEvent,
   DEFAULT_BACKDROP_COLOR,
   DEFAULT_FRAME_DELAY,
   DependencySet,
@@ -3854,16 +4802,20 @@ export {
   FrameChangedEvent,
   FrameProperty,
   IntrinsicSizeProperty,
+  LazyActors,
   LeftMapEvent,
   MoveAction,
+  OpacityProperty,
   OutsideMapQuery,
   PIXELS_PER_UNIT,
   PositionProperty,
   PositionalTrait,
+  RemovedEvent,
   ResizeAction,
   RotateAction,
   RotationProperty,
   RuleBuilder,
+  STOP_ALL_SOUNDS,
   ScaleAction,
   ScaleProperty,
   Scheduler,
@@ -3874,18 +4826,36 @@ export {
   SpriteProperty,
   TEXT_ANCHORS,
   Trait,
+  TweenFinishedEvent,
   Vector,
   World,
   WorldBuilder,
+  addTo,
+  addToFront,
+  advanceTween,
   all,
+  beginTween,
   each,
+  extreme,
+  filtered,
+  firstOf,
   firstWhere,
   frameDelay,
+  isTweenable,
+  items,
+  lastOf,
+  listHas,
   one,
+  ordered,
   parseAnimationFile,
   playAnimation,
   pushed,
   rgb,
   rgba,
-  toHex
+  takeFirst,
+  taken,
+  toHex,
+  tweenDisplaced,
+  tweenValue,
+  within
 };
