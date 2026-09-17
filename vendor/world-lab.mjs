@@ -186,7 +186,7 @@ var RuleBuilder = class {
    * Add a per-tick step that runs in a named moment of the frame
    * (core/phases).
    *
-   * What a rule says instead of naming a neighbour: gravity is a force, so it
+   * What a rule says instead of naming a neighbor: gravity is a force, so it
    * runs in `push`, and it need not know that Physics exists to say so.
    */
   addStepIn(id, phase, run) {
@@ -340,7 +340,15 @@ var SPATIAL = {
   created: "created",
   // …and the other end of the same fact. Not raised by `clear world`, which
   // empties a world rather than removing anybody from it (`rules/spatial`).
-  removed: "removed"
+  removed: "removed",
+  // Parenting (specs/PARENTING.md): the actor this one is carried by, and the
+  // four events a change of parent raises. The transform properties above hold
+  // a child's LOCAL values; the world ones are derived (`core/parenting`).
+  parent: "parent",
+  gotParent: "gotParent",
+  lostParent: "lostParent",
+  gainedChild: "gainedChild",
+  lostChild: "lostChild"
 };
 var APPEARANCE = {
   rule: "animation",
@@ -473,6 +481,21 @@ function firstOf(value) {
   }
   return [];
 }
+function isSameActor(a, b) {
+  const one2 = firstOf(a)[0];
+  return one2 !== void 0 && one2 === firstOf(b)[0];
+}
+function anyOf(value) {
+  let chosen;
+  let seen = 0;
+  for (const actor of walk(value)) {
+    seen += 1;
+    if (Math.random() * seen < 1) {
+      chosen = actor;
+    }
+  }
+  return chosen ? [chosen] : [];
+}
 
 // src/engine/core/lists.ts
 var LIST_TYPES = /* @__PURE__ */ new Set(["numbers", "words", "vectors"]);
@@ -535,15 +558,15 @@ function listHas(list, value) {
   const version = versionOf(list);
   let index = indexes.get(list);
   if (!index || index.version !== version) {
-    const keys = /* @__PURE__ */ new Set();
+    const keys2 = /* @__PURE__ */ new Set();
     for (const item of list) {
       const key = keyFor(item);
       if (key === void 0) {
         return list.some((item_) => sameValue(item_, value));
       }
-      keys.add(key);
+      keys2.add(key);
     }
-    index = { version, keys };
+    index = { version, keys: keys2 };
     indexes.set(list, index);
   }
   return index.keys.has(wanted);
@@ -558,6 +581,10 @@ function sameValue(one2, other) {
   return a !== void 0 && b !== void 0 && a.x === b.x && a.y === b.y;
 }
 var lastOf = (list) => items(list)[items(list).length - 1];
+var itemOf = (list, n) => {
+  const index = Math.floor(Number(n));
+  return Number.isFinite(index) && index >= 1 ? items(list)[index - 1] : void 0;
+};
 
 // src/engine/core/traits.ts
 var DependencySet = class {
@@ -783,6 +810,10 @@ var Traited = class {
 
 // src/engine/core/viewport.ts
 var TILE_SIZE = 32;
+function fitToTile(width, height) {
+  const longest = Math.max(width, height);
+  return longest > TILE_SIZE ? TILE_SIZE / longest : 1;
+}
 var VIEWPORT_TILES = 10;
 var VIEWPORT_WIDTH = VIEWPORT_TILES * TILE_SIZE;
 var VIEWPORT_HEIGHT = VIEWPORT_TILES * TILE_SIZE;
@@ -871,9 +902,9 @@ function channels(value) {
     const at = (index, fallback) => clamp01(Number(value[index] ?? fallback));
     return [at(0, 0), at(1, 0), at(2, 0), at(3, 1)];
   }
-  const text = String(value ?? "").trim();
-  const short = /^#?([0-9a-f])([0-9a-f])([0-9a-f])([0-9a-f])?$/i.exec(text);
-  const long = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})?$/i.exec(text);
+  const text2 = String(value ?? "").trim();
+  const short = /^#?([0-9a-f])([0-9a-f])([0-9a-f])([0-9a-f])?$/i.exec(text2);
+  const long = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})?$/i.exec(text2);
   const match = short ?? long;
   if (!match) {
     return [0, 0, 0, 1];
@@ -899,10 +930,10 @@ function toHex(color) {
 }
 
 // src/engine/core/hash.ts
-function fnv1a(text) {
+function fnv1a(text2) {
   let value = 2166136261;
-  for (let index = 0; index < text.length; index++) {
-    value ^= text.charCodeAt(index);
+  for (let index = 0; index < text2.length; index++) {
+    value ^= text2.charCodeAt(index);
     value += (value << 1) + (value << 4) + (value << 7) + (value << 8) + (value << 24);
   }
   return (value >>> 0).toString(36);
@@ -914,7 +945,7 @@ var TEXT_ANCHORS = [
   "top",
   "top right",
   "left",
-  "centre",
+  "center",
   "right",
   "bottom left",
   "bottom",
@@ -953,9 +984,9 @@ var CommandPen = class {
     this.commands.push({ op: "circle", x, y, radius, ...this.paint() });
   }
   /**
-   * A line is drawn in the outline colour, FALLING BACK TO THE FILL.
+   * A line is drawn in the outline color, FALLING BACK TO THE FILL.
    *
-   * A line has no interior, so "the colour" is the only paint it can mean. The
+   * A line has no interior, so "the color" is the only paint it can mean. The
    * fallback is the whole of what stops the commonest first drawing anybody
    * writes — `draw line`, with the pen untouched — from producing nothing at
    * all and no way to find out why.
@@ -972,10 +1003,10 @@ var CommandPen = class {
       ...paint.stroke === void 0 ? paint.fill === void 0 ? {} : { stroke: paint.fill } : { stroke: paint.stroke }
     });
   }
-  text(text, x, y, size, anchor, wrapWidth) {
+  text(text2, x, y, size, anchor, wrapWidth) {
     this.commands.push({
       op: "text",
-      text,
+      text: text2,
       x,
       y,
       size,
@@ -1049,37 +1080,101 @@ var EventQueue = class {
   }
 };
 
-// src/engine/core/ruleIds.ts
-var placement = (order) => order.kind === "before" || order.kind === "after" ? `${order.kind} ${order.anchor.ownerId}.${order.anchor.id}` : order.kind;
-function codeOf(rule3) {
-  const parts = [];
-  const each2 = (record, write) => Object.keys(record).sort().forEach((key) => write(record[key]));
-  each2(
-    rule3.steps,
-    (step) => parts.push(`step ${step.id} ${placement(step.order)} ${step.run}`)
-  );
-  each2(
-    rule3.actions,
-    (action) => parts.push(`action ${action.id} ${action.apply}`)
-  );
-  each2(
-    rule3.queries,
-    (query) => parts.push(`query ${query.id} ${query.evaluate}`)
-  );
-  each2(rule3.traits, (trait) => {
-    each2(
-      trait.actions,
-      (action) => parts.push(`${trait.id} action ${action.id} ${action.apply}`)
-    );
-    each2(
-      trait.queries,
-      (query) => parts.push(`${trait.id} query ${query.id} ${query.evaluate}`)
-    );
-  });
-  return parts.join("\n");
+// src/engine/core/keys.ts
+var NAMED_KEYS = [
+  ["space", " "],
+  ["up arrow", "ArrowUp"],
+  ["down arrow", "ArrowDown"],
+  ["left arrow", "ArrowLeft"],
+  ["right arrow", "ArrowRight"],
+  ["enter", "Enter"],
+  // THE EDITING KEYS, which are only in this table because of their capitals —
+  // and which were missing, so a Text Input listening for `backspace` heard
+  // `Backspace` and never fired. They make no CHARACTER, so they never arrive
+  // as one (`rules/input`): a field that wants to delete has to hear them as
+  // keys, and could not until they were named.
+  ["backspace", "Backspace"],
+  ["delete", "Delete"],
+  ["tab", "Tab"],
+  ["escape", "Escape"],
+  // …AND THE MODIFIER, which is here for a different reason from the four
+  // above. Shift already reached the pressed set under the browser's own name,
+  // because anything the table does not hold keeps it — so `Shift` worked and
+  // `shift` did not, and no author could pick either from a dropdown built
+  // from this table. Naming it makes it choosable, which is what Shift+Tab
+  // walking the focus backwards needs (`rules/tabNavigation`).
+  //
+  // It is NOT how a shifted letter is heard: `a` with shift held is the key
+  // `a` and the character `A`, and the two arrive by different doors
+  // (specs/UI_ACTORS.md).
+  ["shift", "Shift"]
+];
+var RESERVED_KEYS = /* @__PURE__ */ new Set(["escape"]);
+var BY_DOM_KEY = new Map(
+  NAMED_KEYS.map(([name, domKey]) => [domKey, name])
+);
+var KEY_CHOICES = [
+  ...NAMED_KEYS.map(([name]) => [name, name]),
+  ..."abcdefghijklmnopqrstuvwxyz".split("").map((letter) => [letter.toUpperCase(), letter])
+];
+
+// src/engine/core/parenting.ts
+var keys;
+function registerParenting(next) {
+  keys = next;
 }
-function ruleContentHash(rule3) {
-  return fnv1a(codeOf(rule3));
+var parentingKeys = () => keys;
+var isWorldTransformProperty = (property) => keys !== void 0 && (property === keys.position || property === keys.rotation || property === keys.scale);
+function compose(parent, local) {
+  return {
+    position: parent.position.add(
+      local.position.multiply(parent.scale).rotate(parent.rotation)
+    ),
+    rotation: parent.rotation + local.rotation,
+    scale: parent.scale.multiply(local.scale)
+  };
+}
+var unscale = (vector, by) => new Vector(
+  by.x === 0 ? 0 : vector.x / by.x,
+  by.y === 0 ? 0 : vector.y / by.y
+);
+function toLocal(parent, world) {
+  return {
+    position: unscale(
+      world.position.subtract(parent.position).rotate(-parent.rotation),
+      parent.scale
+    ),
+    rotation: world.rotation - parent.rotation,
+    scale: unscale(world.scale, parent.scale)
+  };
+}
+function localTransformOf(actor) {
+  if (!keys) {
+    throw new Error("world-lab: parenting is not registered");
+  }
+  return {
+    position: actor.local(keys.position),
+    rotation: actor.local(keys.rotation),
+    scale: actor.local(keys.scale)
+  };
+}
+function worldTransformOf(actor) {
+  const local = localTransformOf(actor);
+  const parent = actor.parent();
+  return parent ? compose(worldTransformOf(parent), local) : local;
+}
+function isDescendantOf(candidate, actor) {
+  const seen = /* @__PURE__ */ new Set();
+  for (let at = candidate; at; at = at.parent()) {
+    if (at === actor) {
+      return true;
+    }
+    if (seen.has(at)) {
+      return false;
+    }
+    seen.add(at);
+  }
+  return false;
 }
 
 // src/engine/core/phases.ts
@@ -1172,6 +1267,39 @@ var PHASES = [
 var INDEX = new Map(PHASES.map((phase, at) => [phase.id, at]));
 var phaseIndex = (id) => INDEX.get(id);
 
+// src/engine/core/ruleIds.ts
+var placement = (order) => order.kind === "before" || order.kind === "after" ? `${order.kind} ${order.anchor.ownerId}.${order.anchor.id}` : order.kind;
+function codeOf(rule3) {
+  const parts = [];
+  const each2 = (record, write) => Object.keys(record).sort().forEach((key) => write(record[key]));
+  each2(
+    rule3.steps,
+    (step) => parts.push(`step ${step.id} ${placement(step.order)} ${step.run}`)
+  );
+  each2(
+    rule3.actions,
+    (action) => parts.push(`action ${action.id} ${action.apply}`)
+  );
+  each2(
+    rule3.queries,
+    (query) => parts.push(`query ${query.id} ${query.evaluate}`)
+  );
+  each2(rule3.traits, (trait) => {
+    each2(
+      trait.actions,
+      (action) => parts.push(`${trait.id} action ${action.id} ${action.apply}`)
+    );
+    each2(
+      trait.queries,
+      (query) => parts.push(`${trait.id} query ${query.id} ${query.evaluate}`)
+    );
+  });
+  return parts.join("\n");
+}
+function ruleContentHash(rule3) {
+  return fnv1a(codeOf(rule3));
+}
+
 // src/engine/core/Scheduler.ts
 var Scheduler = class {
   ordered;
@@ -1182,9 +1310,16 @@ var Scheduler = class {
   order() {
     return this.ordered;
   }
-  /** Run every step in order, once, for this tick. */
-  run(world, delta) {
+  /**
+   * Run every step in order, once, for this tick — or only the ones `only`
+   * admits, which is how a paused world keeps sensing while nothing moves
+   * (`World.pause`).
+   */
+  run(world, delta, only) {
     for (const step of this.ordered) {
+      if (only && !only(step)) {
+        continue;
+      }
       world.beginStep();
       const run = step.run;
       run(world, delta);
@@ -1353,7 +1488,18 @@ var SpatialIndex = class {
   }
 };
 
+// src/engine/core/textValue.ts
+function text(value) {
+  if (value === void 0 || value === null) {
+    return "";
+  }
+  return Array.isArray(value) ? value.map(text).join(" ") : String(value);
+}
+
 // src/engine/core/World.ts
+var nameOf = (id) => id.replace(/#\d+$/, "");
+var SENSE = phaseIndex("sense") ?? 0;
+var whilePaused = (step) => step.order.kind === "phase" && (phaseIndex(step.order.phase) ?? Infinity) <= SENSE;
 var slotValues = (layer, slot) => ({
   layer,
   ...slot.sprite === void 0 ? {} : { sprite: slot.sprite },
@@ -1393,7 +1539,7 @@ var ActorCollection = class {
   }
   /**
    * Every actor of a kind — the module a template was registered under
-   * (`actors/coin`), or a world-local template's id.
+   * (`actors/coin`).
    *
    * What `any ⟨Coin⟩` means everywhere except a handler's subject socket: the
    * coins there are, right now. (In that one socket it means the TEMPLATE, so
@@ -1487,6 +1633,8 @@ var World = class {
   // Which actor kinds have already contributed, by the TYPE they were placed
   // under: a kind contributes once however many of it there are.
   kindsWithSteps = /* @__PURE__ */ new Set();
+  /** The kinds whose handlers about named actors are registered already. */
+  kindsWithNamedHandlers = /* @__PURE__ */ new Set();
   /** How each kind that describes its own picture draws itself, by type. */
   kindDrawings = /* @__PURE__ */ new Map();
   /** The properties this world declared for itself — see `defineOwnProperty`. */
@@ -1538,7 +1686,7 @@ var World = class {
   // Effects played across the whole viewport, not on any one actor. Mutable for
   // the same reason an actor's list is: the driver re-reads it every frame.
   appliedEffects;
-  // The one colour behind everything. World-scoped, not per layer: a colour on
+  // The one color behind everything. World-scoped, not per layer: a color on
   // any layer but the bottom is behind the layer under it and can never be
   // seen, so there is one sky (BACKGROUNDS.md).
   clearColor;
@@ -1564,6 +1712,63 @@ var World = class {
   // Rule steps read it through `isKeyDown`; keys carry OUR names — 'left arrow',
   // 'a', 'space' — which the driver translates the DOM's into (core/keys).
   keys = /* @__PURE__ */ new Set();
+  /**
+   * The characters TYPED since the last tick, in the order they were typed.
+   *
+   * A QUEUE, where the keys are a set, and the difference is the whole reason
+   * this is separate. A key is held or it is not, so a set answers everything
+   * anybody asks about one; typing is a sequence — "aa" is two characters and
+   * "ab" is not "ba" — and a set loses both facts. It is also not the same
+   * question: shift, a dead key, an IME and a paste all produce characters and
+   * no key edge anybody could name (specs/UI_ACTORS.md).
+   *
+   * Drained by `tick`, so a frame sees exactly what was typed into it.
+   */
+  typed = [];
+  /**
+   * Keys the game has asked the browser to leave alone.
+   *
+   * THE BROWSER HAS ITS OWN USE FOR SOME KEYS, and which ones a game needs is
+   * a fact about the game rather than a constant in the driver — where it has
+   * been living (`PhaserBinding`'s `SCROLL_KEYS`, arrows and space, hard-coded
+   * so a platformer does not scroll the page). Tab is the case that could not
+   * be a constant: an interface actor holding the focus wants it, and a game
+   * with nothing focused must NOT have it, or the canvas is somewhere a
+   * keyboard user can enter and not leave (specs/UI_ACTORS.md).
+   *
+   * So the world says, and the driver reads. Escape is never in here — see
+   * `RESERVED_KEYS`.
+   */
+  captured = /* @__PURE__ */ new Set();
+  /**
+   * Whether the game window took the keyboard since the last tick.
+   *
+   * ONE FRAME, drained by `tick` like the typed characters, because it is the
+   * same kind of thing: a moment rather than a state. It is how a rule tells
+   * an arrival from an ordinary keypress — tabbing ONTO the game and pressing
+   * Tab INSIDE it both look like a Tab edge, and they mean opposite things
+   * (one comes in, the other goes on or leaves).
+   */
+  keyboardArrived = false;
+  /**
+   * How wide a line of text is, or nothing when nobody has said.
+   *
+   * THE ONE MEASUREMENT THE ENGINE CANNOT MAKE. Everything else about a
+   * picture is arithmetic on numbers the project stated; a letter's width is a
+   * fact about a font, and this half has no font and no canvas by design
+   * (specs/DRAWING.md). `draw paragraph` avoids the question by handing its
+   * column down and letting the painter break the lines.
+   *
+   * A CARET IS THE CASE THAT COULD NOT BE AVOIDED. It belongs after the last
+   * letter, and it MOVES on a click — which is a handler, not a paint, so an
+   * answer published by the last frame's drawing arrives too late to place it.
+   * So the tape is lent the other way: a driver that has a canvas hands one
+   * over (`runtime/driver/textMetrics`), built from the same font string the
+   * painter sets, and `textWidth` is what blocks ask through.
+   *
+   * Undefined is the headless case and answers zero rather than guessing.
+   */
+  measure;
   /** Actor templates by the module path a map names them with (`define`). */
   types = /* @__PURE__ */ new Map();
   // The previous tick's pressed set, so a rule step can detect rising/falling
@@ -1667,6 +1872,10 @@ var World = class {
   leaving = /* @__PURE__ */ new Set();
   /** Whether a tick is running, which is what makes removal deferred. */
   inTick = false;
+  /** Whether the game is paused — see {@link pause}. */
+  paused = false;
+  /** Handlers registered against a placement NAME — see {@link named}. */
+  namedHandlers = /* @__PURE__ */ new Map();
   /**
    * Whether the world is inside a frame right now.
    *
@@ -1736,8 +1945,8 @@ var World = class {
    *
    * The `each frame` an `.actor` file may declare (blockly/actorMeta), and the
    * counterpart to `defineProperty`: state a kind carries without a rule, and
-   * now behaviour a kind runs without one. A rule is still what you write when
-   * the behaviour is shared, elected or answerable — this is for the case where
+   * now behavior a kind runs without one. A rule is still what you write when
+   * the behavior is shared, elected or answerable — this is for the case where
    * it is none of those and a whole `.rule` file is more ceremony than the thing
    * deserves.
    *
@@ -1759,6 +1968,13 @@ var World = class {
   useActorKind(type, template) {
     if (template.ownDrawing && !this.kindDrawings.has(type)) {
       this.kindDrawings.set(type, template.ownDrawing);
+    }
+    const named = template.ownNamedHandlers ?? [];
+    if (named.length && !this.kindsWithNamedHandlers.has(type)) {
+      this.kindsWithNamedHandlers.add(type);
+      for (const [name, event, handler] of named) {
+        this.named(name).on(event, handler);
+      }
     }
     const steps = template.ownSteps ?? [];
     if (!steps.length || this.kindsWithSteps.has(type)) {
@@ -1788,9 +2004,16 @@ var World = class {
    * would make the core depend on a rule it is supposed to merely run.
    */
   intrinsicSizeProperty() {
+    return this.positionalProperty(SPATIAL.intrinsicSize);
+  }
+  /** …and `scale`, which is the other half of how big a thing is drawn. */
+  scaleProperty() {
+    return this.positionalProperty(SPATIAL.scale);
+  }
+  positionalProperty(id) {
     const spatial = this.membership.items().find((r) => r.id === SPATIAL.rule);
     const positional = spatial?.traits[SPATIAL.trait];
-    return positional?.properties[SPATIAL.intrinsicSize];
+    return positional?.properties[id];
   }
   place(actor, layer = DEFAULT_LAYER_ID) {
     actor.world = this;
@@ -1800,11 +2023,15 @@ var World = class {
     if (drawing) {
       const property = this.intrinsicSizeProperty();
       if (property) {
-        actor.set(property, new Vector(drawing.width, drawing.height));
+        const { width, height } = drawing.size(actor, this);
+        actor.set(property, new Vector(width, height));
       }
     }
     this.actorList.push(actor);
     this.actorsById.set(actor.id, (this.actorsById.get(actor.id) ?? 0) + 1);
+    for (const [event, handler] of this.namedHandlers.get(nameOf(actor.id)) ?? []) {
+      actor.on(event, handler);
+    }
     const created = this.spatialEvent(SPATIAL.created);
     if (created) {
       this.emit(created, actor);
@@ -1942,6 +2169,9 @@ var World = class {
   }
   /** Actually take it out: off the list, and no longer pointing at this world. */
   detach(actor) {
+    for (const child of this.childrenOf(actor)) {
+      this.detach(child);
+    }
     const removed = this.spatialEvent(SPATIAL.removed);
     if (removed && this.actorList.includes(actor)) {
       this.emit(removed, actor);
@@ -1958,6 +2188,70 @@ var World = class {
     }
     actor.world = void 0;
     actor.layer = void 0;
+  }
+  /**
+   * The actors carried by `actor`, in placement order — asked here rather
+   * than stored on the parent, so a `parent` set anywhere is the one answer
+   * (specs/PARENTING.md).
+   */
+  childrenOf(actor) {
+    return this.actorList.filter((candidate) => candidate.parent() === actor);
+  }
+  /**
+   * The actors placed under `name` — the id a map gave a placement, which a
+   * block may name (`the actor named ⟨…⟩`, specs/MAPS.md).
+   *
+   * BY THE NAME, NOT THE ID: a map loaded twice numbers its second Resume
+   * `Resume#2` (`resolveInstanceId`), and a handler about "Resume" means
+   * both. Usually one; a list because an actor value is one, and because
+   * nothing forbids two.
+   */
+  actorsNamed(name) {
+    return this.actorList.filter((actor) => nameOf(actor.id) === name);
+  }
+  /**
+   * Something a hat may register on, for the actor named `name`: the ones
+   * placed already, and every one placed later. What `any ⟨kind⟩` gets from
+   * a template's handlers, a name gets from here — a pause menu's Resume is
+   * not in the world when the world is described, and its hat must still
+   * find it.
+   */
+  named(name) {
+    return {
+      on: (event, handler) => {
+        const list = this.namedHandlers.get(name) ?? [];
+        list.push([event, handler]);
+        this.namedHandlers.set(name, list);
+        for (const actor of this.actorsNamed(name)) {
+          actor.on(event, handler);
+        }
+      }
+    };
+  }
+  /**
+   * Stop the game moving, and keep it listening.
+   *
+   * A paused world still ticks: the clock runs, the driver draws, and the
+   * `sense` phase runs — key and mouse edges become events, so a pause menu's
+   * buttons still hear a click and Tab still walks the focus — and every
+   * event handler runs, since handlers are how a menu answers. What stops is
+   * every step after `sense`: nothing decides, moves, collides, settles or
+   * animates until {@link resume}. That is what "paused" means to a player,
+   * and it needs no rule to know it is paused (specs/UI_ACTORS.md).
+   *
+   * The interface actors that DO something each frame — a slider following
+   * the pointer, a field sliding its caret — are steps too, and stop with
+   * the rest; a pause menu is buttons, and buttons are events.
+   */
+  pause() {
+    this.paused = true;
+  }
+  /** The other end of {@link pause}. */
+  resume() {
+    this.paused = false;
+  }
+  isPaused() {
+    return this.paused;
   }
   /** Whether an actor with `id` is already in this world. */
   hasActor(id) {
@@ -2148,7 +2442,7 @@ var World = class {
    * of game, not two seconds of sitting in a paused tab.
    *
    * It agrees exactly with anything integrated from `delta`. A bullet that has
-   * travelled `speed × 2` has an age of exactly 2, because the same numbers
+   * traveled `speed × 2` has an age of exactly 2, because the same numbers
    * added up both times. Sampling a clock here would let the two disagree by
    * however long the frame took to draw.
    *
@@ -2294,6 +2588,10 @@ var World = class {
             deferred.push([actor, property, value]);
             continue;
           }
+          if (property.type === "actors" && Array.isArray(value)) {
+            deferred.push([actor, property, value]);
+            continue;
+          }
           actor.set(property, value);
         }
       }
@@ -2302,10 +2600,20 @@ var World = class {
       added.push(actor);
     }
     for (const [actor, property, id] of deferred) {
-      const target = placed.get(id);
-      if (target) {
-        actor.set(property, target);
+      if (Array.isArray(id)) {
+        const targets = id.map((one2) => placed.get(one2)).filter((one2) => one2 !== void 0);
+        actor.set(property, targets);
+        continue;
       }
+      const target = placed.get(id);
+      if (!target) {
+        continue;
+      }
+      if (parentingKeys()?.parent === property) {
+        actor.setParent(target, { keepWorld: false });
+        continue;
+      }
+      actor.set(property, target);
     }
     return added;
   }
@@ -2337,8 +2645,85 @@ var World = class {
     return this;
   }
   /** Replace the pressed-key set (driver calls this each frame before `tick`). */
-  setInput(keys) {
-    this.keys = new Set(keys);
+  setInput(keys2) {
+    this.keys = new Set(keys2);
+  }
+  /**
+   * Add to what was typed this frame — the driver calls this per keystroke.
+   *
+   * APPENDED rather than replaced, unlike `setInput`: several characters may
+   * arrive between two frames, and a call per character is what the DOM hands
+   * over.
+   */
+  addTyped(characters) {
+    this.typed.push(...characters);
+  }
+  /** What was typed since the last tick, in order. */
+  typedCharacters() {
+    return this.typed;
+  }
+  /**
+   * Ask the browser to leave `key` to the game — `capture the ⟨tab⟩ key`.
+   *
+   * Refused for `escape`, which is the way out of the game and is not the
+   * game's to take (`core/keys`, RESERVED_KEYS). Refused silently rather than
+   * thrown: a rule asking is asking, and a game that stopped dead because it
+   * wanted one key too many would be worse than one that simply does not get
+   * it.
+   */
+  captureKey(key) {
+    if (!RESERVED_KEYS.has(key)) {
+      this.captured.add(key);
+    }
+  }
+  /** Give `key` back to the browser — `release the ⟨tab⟩ key`. */
+  releaseKey(key) {
+    this.captured.delete(key);
+  }
+  /** The keys the game has claimed; the driver suppresses their default. */
+  capturedKeys() {
+    return this.captured;
+  }
+  /** The game window took the keyboard (the driver calls this on focus). */
+  gainedKeyboard() {
+    this.keyboardArrived = true;
+  }
+  /** Whether it took the keyboard since the last tick. */
+  keyboardJustArrived() {
+    return this.keyboardArrived;
+  }
+  /**
+   * Lend the world a way to measure text (the driver calls this once).
+   *
+   * Once, at set-up, and not per frame: a measurer is a canvas and a font, and
+   * neither changes while a game runs.
+   */
+  useTextMetrics(measure) {
+    this.measure = measure;
+  }
+  /**
+   * How wide `value` would be drawn at `size` pixels, in pixels.
+   *
+   * ZERO WHEN NOTHING CAN MEASURE, which is the honest answer and not a
+   * failure: a world with no canvas behind it — the headless check runner is
+   * one — puts a caret at the left margin, and that is visibly nothing rather
+   * than invisibly wrong.
+   *
+   * The value is said as words the way everything else is (`core/textValue`),
+   * so a list measures as the sentence it draws as rather than as its
+   * brackets. A size that is not a positive number measures nothing: there is
+   * no text at zero pixels, and a negative one is a typo.
+   */
+  textWidth(value, size) {
+    if (!this.measure) {
+      return 0;
+    }
+    const words = text(value);
+    const at = Number(size);
+    if (!words || !Number.isFinite(at) || at <= 0) {
+      return 0;
+    }
+    return this.measure(words, at) || 0;
   }
   /** Whether `key` (a name from `core/keys`) is currently pressed. */
   isKeyDown(key) {
@@ -2407,6 +2792,100 @@ var World = class {
       camera.position.y - view.y / 2 + this.pointer.y
     );
   }
+  /**
+   * How much an animation's frames are shrunk, by its largest cell.
+   *
+   * THE LARGEST, not each frame's own: fitted one by one, a two-pixel frame
+   * would draw as big as a hundred-pixel one and the actor would pulse. It is
+   * the same quantity `publishIntrinsicSize` measures the box from, which is
+   * what keeps the drawn size and the box the same number
+   * (specs/ACTOR_SIZE.md).
+   */
+  publishAnimationSize(actor, def) {
+    let width = 0;
+    let height = 0;
+    for (const frame of def.frames) {
+      if (frame.position) {
+        width = Math.max(width, frame.position.width);
+        height = Math.max(height, frame.position.height);
+      }
+    }
+    if (width <= 0 || height <= 0) {
+      return 1;
+    }
+    const fit = fitToTile(width, height);
+    this.publishSize(actor, width * fit, height * fit);
+    return fit;
+  }
+  /**
+   * Say how big an actor is, if it has changed.
+   *
+   * WRITTEN FROM THE SNAPSHOT, which the drawing branch below has always done
+   * and which the sprite branches do now. The Animation rule publishes the
+   * same number on every tick, and that is the path the game runs on; this is
+   * for the reader that never ticks — the sandbox's introspection pass builds
+   * a world, reads it once and throws it away, and a map editor told nothing
+   * draws every kind at one nominal tile (`sandbox/worldPreviewWorkerManager`).
+   *
+   * Only when it moved, so an ordinary actor's is set once and never again.
+   */
+  publishSize(actor, width, height) {
+    const property = this.intrinsicSizeProperty();
+    if (!property) {
+      return;
+    }
+    const known = actor.get(property);
+    if (known?.x !== width || known?.y !== height) {
+      actor.set(property, new Vector(width, height));
+    }
+  }
+  /**
+   * How big this actor is in world units, BEFORE its scale, if anything has
+   * said.
+   *
+   * The one question "how big is it" has one answer, and it is this property:
+   * a drawing's declared canvas and a sprite's picture fitted to a tile both
+   * land in it, so a caller asks the size rather than asking what kind of
+   * actor it is looking at (specs/ACTOR_SIZE.md).
+   *
+   * UNSCALED ON PURPOSE, and it was briefly not: a reader draws this box
+   * through the actor's own transform, and that transform already carries the
+   * scale. Folding the scale in here doubled it the moment a placement
+   * overrode `scale` — the editor drawing kind × placement where the game
+   * draws placement alone. The scale is a separate question with a separate
+   * answer ({@link scaleOf}).
+   *
+   * Undefined for an actor nobody has measured — no appearance, or a picture
+   * the project never stated a size for. A caller that must draw something
+   * anyway falls back to a tile, which is what it always did.
+   */
+  sizeOf(actor) {
+    const property = this.intrinsicSizeProperty();
+    const size = property ? actor.get(property) : void 0;
+    if (!size || size.x <= 0 || size.y <= 0) {
+      return void 0;
+    }
+    return { width: size.x, height: size.y };
+  }
+  /**
+   * What this actor's kind was told to scale itself by.
+   *
+   * THE OTHER HALF OF HOW BIG IT IS, and the half an editor could not read. A
+   * `set scale of this to x 1 y 2` row runs when the actor is defined, so it
+   * is true of a world that was never played — but nothing outside the engine
+   * asked, and the map editor filled in a scale of one for every kind. A
+   * two-tile actor was drawn as a square there: right in the game, square in
+   * the editor, with nothing on screen to say which was lying.
+   *
+   * Left signed, unlike `rules/spatial.halfExtent`: a scale of -1 is a facing
+   * and a reader drawing through a transform wants the flip, where one
+   * measuring an extent wants the magnitude.
+   */
+  scaleOf(actor) {
+    const property = this.scaleProperty();
+    const scale = property ? actor.get(property) : void 0;
+    return scale ? { x: scale.x, y: scale.y } : void 0;
+  }
   /** The definition of a known animation, or undefined. */
   /** How big an image is, if the project measured it. */
   imageSize(name) {
@@ -2430,7 +2909,7 @@ var World = class {
     this.inTick = true;
     this.elapsed += delta;
     try {
-      this.scheduler.run(this, delta);
+      this.scheduler.run(this, delta, this.paused ? whilePaused : void 0);
       this.events.flush(this);
     } finally {
       this.inTick = false;
@@ -2441,6 +2920,8 @@ var World = class {
     }
     this.previousKeys = this.keys;
     this.previousButtons = this.buttons;
+    this.typed = [];
+    this.keyboardArrived = false;
   }
   /** The resolved step order — for inspection and tests. */
   stepOrder() {
@@ -2507,7 +2988,7 @@ var World = class {
   foregroundSnapshot() {
     return this.layerList.map((layer) => layer.foreground);
   }
-  /** The one colour behind everything, as the driver clears to it. */
+  /** The one color behind everything, as the driver clears to it. */
   backdropColor() {
     return this.clearColor;
   }
@@ -2528,7 +3009,7 @@ var World = class {
   /**
    * Draw `sprite` behind everything — an image file name, as a frame names one.
    *
-   * `undefined` clears it, leaving the backdrop colour. The image is stretched
+   * `undefined` clears it, leaving the backdrop color. The image is stretched
    * to the viewport by the driver (BACKGROUNDS.md §4); nothing here knows how
    * big it is, and a backdrop is never a spritesheet, so this takes a file name
    * and never a cell reference.
@@ -2633,21 +3114,21 @@ var World = class {
    * Draw `sprite` in FRONT of this layer's actors — fog, snow, a vignette.
    *
    * The background's twin in every respect but depth. `undefined` clears it,
-   * leaving nothing drawn: unlike the background there is no colour behind a
-   * foreground, because a colour in front of everything would be a wall.
+   * leaving nothing drawn: unlike the background there is no color behind a
+   * foreground, because a color in front of everything would be a wall.
    */
   setForeground(sprite, layer = DEFAULT_LAYER_ID) {
     this.slotAt(layer, "foreground").sprite = sprite;
     return this;
   }
   /**
-   * Set the colour behind the backdrop image, and behind everything without one.
+   * Set the color behind the backdrop image, and behind everything without one.
    *
-   * Takes whatever a colour block produced — hex from a picker, floats from
-   * `r g b a` — because `rgba` accepts both and every colour block can then
+   * Takes whatever a color block produced — hex from a picker, floats from
+   * `r g b a` — because `rgba` accepts both and every color block can then
    * feed this one (see color.ts).
    *
-   * One sky, not one per layer: a colour on any layer but the bottom would be
+   * One sky, not one per layer: a color on any layer but the bottom would be
    * hidden by the layer under it.
    */
   setBackgroundColor(color) {
@@ -2919,7 +3400,11 @@ var World = class {
             sprite: f.sprite,
             cell: f.position,
             offset: f.offset ?? { x: 0, y: 0 },
-            scale: f.scale ?? 1
+            // FITTED, by the same factor the size was published with: the
+            // largest cell across the whole animation, so a smaller frame
+            // draws smaller instead of every frame swelling to a tile
+            // (`rules/animation.publishIntrinsicSize`, specs/ACTOR_SIZE.md).
+            scale: (f.scale ?? 1) * this.publishAnimationSize(actor, def)
           };
         }
       }
@@ -2933,7 +3418,13 @@ var World = class {
           width: size.x,
           height: size.y
         } : void 0;
-        return { sprite, cell, offset: { x: 0, y: 0 }, scale: 1 };
+        const measured = cell ? { width: cell.width, height: cell.height } : this.imageSize(sprite);
+        if (!measured) {
+          return { sprite, cell, offset: { x: 0, y: 0 }, scale: 1 };
+        }
+        const fit = fitToTile(measured.width, measured.height);
+        this.publishSize(actor, measured.width * fit, measured.height * fit);
+        return { sprite, cell, offset: { x: 0, y: 0 }, scale: fit };
       }
       return void 0;
     };
@@ -2944,10 +3435,18 @@ var World = class {
       }
       const pen = new CommandPen();
       drawing.run(actor, pen, this);
+      const { width, height } = drawing.size(actor, this);
+      const sizeProperty = this.intrinsicSizeProperty();
+      if (sizeProperty) {
+        const known = actor.get(sizeProperty);
+        if (known?.x !== width || known?.y !== height) {
+          actor.set(sizeProperty, new Vector(width, height));
+        }
+      }
       return {
-        key: drawingKey(drawing.width, drawing.height, pen.commands),
-        width: drawing.width,
-        height: drawing.height,
+        key: drawingKey(width, height, pen.commands),
+        width,
+        height,
         commands: pen.commands
       };
     };
@@ -2958,8 +3457,23 @@ var World = class {
       }
       const position = actor.get(positionProp);
       const scale = actor.get(scaleProp);
+      const parent = actor.parent();
+      const stored = parent ? {
+        position: actor.local(positionProp),
+        scale: actor.local(scaleProp)
+      } : void 0;
       states.push({
         actor,
+        ...parent && stored ? {
+          parent,
+          local: {
+            x: stored.position.x,
+            y: stored.position.y,
+            scaleX: stored.scale.x,
+            scaleY: stored.scale.y,
+            rotation: actor.local(rotationProp)
+          }
+        } : {},
         x: position.x,
         y: position.y,
         scaleX: scale.x,
@@ -3131,7 +3645,7 @@ var World = class {
           effectContentHash(effect)
         ])
       ),
-      // Per layer, in stack order, plus the world's one colour. Values, not
+      // Per layer, in stack order, plus the world's one color. Values, not
       // structure: changing the sky patches the running game.
       backdrops: this.layerList.map(
         (layer) => slotValues(layer.id, layer.background)
@@ -3250,13 +3764,13 @@ var ScaleProperty = PositionalTrait.addProperty(
 );
 var RotationProperty = PositionalTrait.addProperty(
   SPATIAL.rotation,
-  "number",
+  "angle",
   0,
   { name: "rotation" }
 );
 var SkewProperty = PositionalTrait.addProperty(
   SPATIAL.skew,
-  "number",
+  "angle",
   0,
   { name: "vertical skew" }
 );
@@ -3266,6 +3780,36 @@ var IntrinsicSizeProperty = PositionalTrait.addProperty(
   new Vector(0, 0),
   { readonly: true, name: "intrinsic size" }
 );
+var ParentProperty = PositionalTrait.addProperty(
+  SPATIAL.parent,
+  "actor",
+  [],
+  { name: "parent" }
+);
+var GotParentEvent = rule.addEvent(SPATIAL.gotParent, {
+  name: "gets a parent"
+});
+var LostParentEvent = rule.addEvent(SPATIAL.lostParent, {
+  name: "loses its parent"
+});
+var GainedChildEvent = rule.addEvent(SPATIAL.gainedChild, {
+  name: "gains a child"
+});
+var LostChildEvent = rule.addEvent(SPATIAL.lostChild, {
+  name: "loses a child"
+});
+registerParenting({
+  parent: ParentProperty,
+  position: PositionProperty,
+  rotation: RotationProperty,
+  scale: ScaleProperty,
+  events: {
+    gotParent: GotParentEvent,
+    lostParent: LostParentEvent,
+    gainedChild: GainedChildEvent,
+    lostChild: LostChildEvent
+  }
+});
 var MoveAction = PositionalTrait.addAction(
   "move",
   (actor, to) => actor.set(PositionProperty, Vector.from(to)),
@@ -3277,7 +3821,7 @@ var MoveAction = PositionalTrait.addAction(
 var RotateAction = PositionalTrait.addAction(
   "rotate",
   (actor, degrees) => actor.set(RotationProperty, degrees),
-  { name: "Rotate to", params: [{ name: "degrees", type: "number", default: 0 }] }
+  { name: "Rotate to", params: [{ name: "degrees", type: "angle", default: 0 }] }
 );
 var ScaleAction = PositionalTrait.addAction(
   "scaleTo",
@@ -3310,18 +3854,18 @@ function outsideMapAt(actor, at) {
   return at.x + half.x < 0 || at.y + half.y < 0 || at.x - half.x > bounds.x || at.y - half.y > bounds.y;
 }
 function within(value, of, distance) {
-  const centres = all(of);
+  const centers = all(of);
   const reach = Number.isFinite(distance) ? distance : -1;
-  const world = centres[0]?.world;
+  const world = centers[0]?.world;
   if (world && reach >= 0 && value === world.actors) {
     return new LazyActors(function* () {
       const seen = /* @__PURE__ */ new Set();
-      for (const centre of centres) {
+      for (const center of centers) {
         for (const near of world.actorsNear(
-          centre.get(PositionProperty),
+          center.get(PositionProperty),
           reach
         )) {
-          if (!centres.includes(near) && !seen.has(near)) {
+          if (!centers.includes(near) && !seen.has(near)) {
             seen.add(near);
             yield near;
           }
@@ -3331,7 +3875,7 @@ function within(value, of, distance) {
   }
   return filtered(
     value,
-    (actor) => !centres.includes(actor) && centres.some((centre) => gap(actor, centre) <= reach)
+    (actor) => !centers.includes(actor) && centers.some((center) => gap(actor, center) <= reach)
   );
 }
 function gap(one2, other) {
@@ -3465,15 +4009,17 @@ var FrameChangedEvent = rule2.addEvent("frameChanged", {
 function publishPictureSize(world, actor) {
   const cell = actor.get(SpriteCellSizeProperty);
   if (cell.x > 0 && cell.y > 0) {
-    actor.set(IntrinsicSizeProperty, new Vector(cell.x, cell.y));
+    const fit = fitToTile(cell.x, cell.y);
+    actor.set(IntrinsicSizeProperty, new Vector(cell.x * fit, cell.y * fit));
     return;
   }
   const sprite = actor.get(SpriteProperty);
   const measured = sprite ? world.imageSize(sprite) : void 0;
   if (measured) {
+    const fit = fitToTile(measured.width, measured.height);
     actor.set(
       IntrinsicSizeProperty,
-      new Vector(measured.width, measured.height)
+      new Vector(measured.width * fit, measured.height * fit)
     );
   }
 }
@@ -3487,7 +4033,8 @@ function publishIntrinsicSize(actor, def) {
     }
   }
   if (width > 0 && height > 0) {
-    actor.set(IntrinsicSizeProperty, new Vector(width, height));
+    const fit = fitToTile(width, height);
+    actor.set(IntrinsicSizeProperty, new Vector(width * fit, height * fit));
   }
 }
 var AdvanceAnimationStep = rule2.addStep(
@@ -3837,6 +4384,34 @@ var WorldBuilder = class {
     return this;
   }
   /**
+   * Pause, resume, and ask — the world's own (`World.pause`), reachable from
+   * the builder because a block may say them under `define world` as well as
+   * in a handler: a world that opens on its title screen starts paused.
+   */
+  pause() {
+    this.getWorld().pause();
+    return this;
+  }
+  resume() {
+    this.getWorld().resume();
+    return this;
+  }
+  isPaused() {
+    return this.getWorld().isPaused();
+  }
+  /**
+   * The actors a map placed under `name`, and the thing a hat about them
+   * registers on — see {@link World.actorsNamed} and {@link World.named}. On
+   * the builder because a world file says `when ⟨the actor named Resume⟩ is
+   * clicked` at module scope, where `world` is this.
+   */
+  actorsNamed(name) {
+    return this.getWorld().actorsNamed(name);
+  }
+  named(name) {
+    return this.getWorld().named(name);
+  }
+  /**
    * Play a track. See {@link World.setMusic}.
    *
    * Deferred and COLLAPSED, like `set`: music has one value and the last write
@@ -3858,7 +4433,7 @@ var WorldBuilder = class {
   setForeground(sprite, layer = DEFAULT_LAYER_ID) {
     return this.defer("setForeground", sprite, layer);
   }
-  /** Set the colour behind the backdrop. See {@link World.setBackgroundColor}. */
+  /** Set the color behind the backdrop. See {@link World.setBackgroundColor}. */
   setBackgroundColor(color) {
     return this.defer("setBackgroundColor", color);
   }
@@ -4102,7 +4677,7 @@ var WorldBuilder = class {
    * throwaway (the thumbnail renderer builds one per picker refresh, and tests
    * build many). Two worlds made this way are independent — the log holds the
    * arguments a call was given, and the World copies what it stores (a Vector,
-   * a colour), so replaying it twice shares nothing.
+   * a color), so replaying it twice shares nothing.
    */
   /**
    * Declare state this WORLD carries — a score, a level number, a flag.
@@ -4164,7 +4739,7 @@ function apply(world, call) {
 }
 
 // src/engine/core/Actor.ts
-var Actor = class {
+var Actor = class _Actor {
   /**
    * The world this actor is in, set when it is placed.
    *
@@ -4225,8 +4800,100 @@ var Actor = class {
     }
     this.appliedEffects = init.effects ? [...init.effects] : [];
   }
+  /**
+   * A property's value — through the parent, for the three that have a frame.
+   *
+   * `position`, `rotation` and `scale` on an actor that has a parent are
+   * stored in the parent's frame and answered in the world's, composed up the
+   * chain on every read (`core/parenting`). Every other property, and every
+   * property of an actor with no parent, is one map lookup as it always was.
+   */
   get(property) {
+    if (isWorldTransformProperty(property) && this.parent()) {
+      const world = worldTransformOf(this);
+      const keys2 = parentingKeys();
+      return property === keys2.position ? world.position : property === keys2.rotation ? world.rotation : world.scale;
+    }
     return this.traited.get(property);
+  }
+  /** The value a property STORES: a child's local transform, unconverted. */
+  local(property) {
+    return this.traited.get(property);
+  }
+  /**
+   * Store a value as it is, in the frame the slot is in — a child's local
+   * position rather than a world one to convert. Watchers still run.
+   */
+  setLocal(property, value) {
+    return this.store(property, value);
+  }
+  /** The actor this one is carried by, or undefined for a root. */
+  parent() {
+    const keys2 = parentingKeys();
+    if (!keys2 || !this.hasProperty(keys2.parent)) {
+      return void 0;
+    }
+    return this.traited.get(keys2.parent)[0];
+  }
+  /** The actors this one carries, in placement order — asked of the world. */
+  children() {
+    return this.world?.childrenOf(this) ?? [];
+  }
+  /**
+   * Give this actor a parent, or none (specs/PARENTING.md).
+   *
+   * KEEPS THE WORLD POSITION unless told otherwise: the local transform is
+   * worked out from where the actor already is, so nothing jumps. `keepWorld:
+   * false` is for a map, whose stored values are already local. A cycle — a
+   * parent that is this actor or is carried by it — is refused with a warning
+   * and nothing changes. The same parent again changes nothing and raises
+   * nothing.
+   *
+   * The child takes its parent's layer, and four events are raised in order:
+   * the old parent loses a child, this actor loses its parent, this actor
+   * gets a parent, the new parent gains a child.
+   *
+   * @returns whether the parent was set.
+   */
+  setParent(parent, { keepWorld = true } = {}) {
+    const keys2 = parentingKeys();
+    if (!keys2 || !this.hasProperty(keys2.parent)) {
+      return false;
+    }
+    const previous = this.parent();
+    if (previous === parent) {
+      return true;
+    }
+    if (parent && isDescendantOf(parent, this)) {
+      console.warn(
+        `world-lab: \u201C${this.id}\u201D cannot have \u201C${parent.id}\u201D as its parent, which is carried by it already. Nothing was changed.`
+      );
+      return false;
+    }
+    const world = keepWorld ? worldTransformOf(this) : void 0;
+    this.store(keys2.parent, parent ? [parent] : []);
+    if (world) {
+      const local = parent ? toLocal(worldTransformOf(parent), world) : world;
+      this.store(keys2.position, local.position);
+      this.store(keys2.rotation, local.rotation);
+      this.store(keys2.scale, local.scale);
+    }
+    if (parent?.layer !== void 0) {
+      this.layer = parent.layer;
+    }
+    const { events } = keys2;
+    const raise = this.world;
+    if (raise) {
+      if (previous) {
+        raise.emit(events.lostChild, previous, this);
+        raise.emit(events.lostParent, this, previous);
+      }
+      if (parent) {
+        raise.emit(events.gotParent, this, parent);
+        raise.emit(events.gainedChild, parent, this);
+      }
+    }
+    return true;
   }
   /**
    * Set a property's value; returns `this` so instance setup can chain.
@@ -4240,6 +4907,29 @@ var Actor = class {
    * hot path for — costs one field read.
    */
   set(property, value) {
+    const keys2 = parentingKeys();
+    if (keys2) {
+      if (property === keys2.parent) {
+        const given = value instanceof LazyActors ? all(value) : value;
+        const one2 = Array.isArray(given) ? given[0] : given;
+        this.setParent(one2 instanceof _Actor ? one2 : void 0);
+        return this;
+      }
+      if (isWorldTransformProperty(property) && this.parent()) {
+        const parent = worldTransformOf(this.parent());
+        const world = worldTransformOf(this);
+        const next = property === keys2.position ? { ...world, position: Vector.from(value) } : property === keys2.rotation ? { ...world, rotation: value } : { ...world, scale: Vector.from(value) };
+        const local = toLocal(parent, next);
+        return this.store(
+          property,
+          property === keys2.position ? local.position : property === keys2.rotation ? local.rotation : local.scale
+        );
+      }
+    }
+    return this.store(property, value);
+  }
+  /** The write itself: coerce, store, and tell the watchers. */
+  store(property, value) {
     const watchers = property.watch;
     if (!watchers) {
       this.traited.set(property, value);
@@ -4363,7 +5053,7 @@ var Actor = class {
    *
    * WHOLE RUNS, on any overlap at all. A tween moves a SET of properties, so
    * two of them can half-collide — one fading, one moving-and-fading. Splitting
-   * the older run and keeping the half that does not clash is not behaviour
+   * the older run and keeping the half that does not clash is not behavior
    * anybody could predict; "two tweens cannot fight over a property, so the
    * newer replaces the older" is one sentence.
    *
@@ -4482,6 +5172,8 @@ var ActorBuilder = class {
   handlers = [];
   effects = [];
   steps = [];
+  /** Handlers about OTHER actors, by placement name — see {@link named}. */
+  namedHandlers = [];
   drawing;
   constructor(opts) {
     this.id = opts.id;
@@ -4509,6 +5201,43 @@ var ActorBuilder = class {
       return this;
     }
     this.traits = this.traits.filter((held2) => held2?.id !== trait.id);
+    return this;
+  }
+  /**
+   * Take everything another KIND of actor is, and go on being this one.
+   *
+   * `acts like ⟨Progress Bar⟩` — the whole of subclassing here. What comes
+   * across is the DESCRIPTION: the traits it elects, the slots its properties
+   * sit in, the work it does each frame, the picture it paints, the handlers it
+   * registers and the effects it wears. What does not is its identity.
+   *
+   * SO A KIND IS NOT INHERITED, and that is the interesting half. `is a
+   * ⟨Progress Bar⟩` compiles to `each.type === "actors/progressBar"`, and an
+   * instance carries the module it was placed from — so a Health Bar that acts
+   * like a Progress Bar is not one of `any ⟨Progress Bar⟩`. It qualifies under
+   * every TRAIT relationship instead, which is the one that asks what a thing
+   * can do rather than what it is called.
+   *
+   * AT THE MOMENT THE ROW IS READ, not at instantiate: this copies what the
+   * other builder holds NOW. Rows below it therefore have the last word — a
+   * `set` after it overrides an inherited default, because overrides are
+   * applied in order and the later one wins (`Traited`), and a `define drawing`
+   * after it replaces the inherited picture. That is what reading a file
+   * downwards should mean.
+   *
+   * The drawing is the one thing taken CONDITIONALLY, so that a child which
+   * describes its own picture first and says `acts like` afterwards keeps it.
+   */
+  actsLike(other) {
+    this.traits = [...this.traits, ...other.traits];
+    this.overrides.push(...other.overrides);
+    this.handlers.push(...other.handlers);
+    this.namedHandlers.push(...other.namedHandlers);
+    this.steps.push(...other.steps);
+    for (const effect of other.effects) {
+      this.addEffect(effect.path, effect.document, effect.values);
+    }
+    this.drawing ??= other.drawing;
     return this;
   }
   /** Override a trait property's initial value for this actor. */
@@ -4556,9 +5285,9 @@ var ActorBuilder = class {
   /**
    * Declare something this KIND of actor does every frame.
    *
-   * The behaviour half of `defineProperty`, and the same bargain: state a kind
+   * The behavior half of `defineProperty`, and the same bargain: state a kind
    * carries without a rule, and now work a kind does without one. A rule is
-   * still the answer when the behaviour is SHARED between kinds, elected, or
+   * still the answer when the behavior is SHARED between kinds, elected, or
    * answerable by `has trait` — this is for the case where it is none of those
    * and a `.rule` file is more ceremony than the thing deserves.
    *
@@ -4584,7 +5313,7 @@ var ActorBuilder = class {
    *
    * The third of the same bargain `defineProperty` and `defineStep` make: state
    * a kind carries, work it does every frame, and now a NAMED thing it does.
-   * A rule is still the answer when the behaviour is shared between kinds,
+   * A rule is still the answer when the behavior is shared between kinds,
    * elected, or answerable by `has trait`; this is for the case where the
    * honest motivation is that the same six blocks were written twice.
    *
@@ -4630,9 +5359,14 @@ var ActorBuilder = class {
    * arbitrary one, which is at least the one the author saw last.
    */
   defineDrawing(width, height, run) {
+    const measure = (given) => typeof given === "function" ? (actor, world) => Number(given(actor, world)) || 0 : () => given;
+    const across = measure(width);
+    const down = measure(height);
     this.drawing = {
-      width,
-      height,
+      size: (actor, world) => ({
+        width: across(actor, world),
+        height: down(actor, world)
+      }),
       run: (actor, pen, world) => run(actor, pen, world)
     };
     return this;
@@ -4641,10 +5375,55 @@ var ActorBuilder = class {
   get ownDrawing() {
     return this.drawing;
   }
+  /**
+   * Declare an event this KIND of actor raises — `define event`.
+   *
+   * The fourth of the bargain `defineProperty`, `defineStep` and `defineAction`
+   * make: state a kind carries, work it does every frame, a named thing it
+   * does, and now something that HAPPENS to it. A rule is still the answer when
+   * the event is shared between kinds or elected; this is for the case where
+   * one kind of actor has a moment worth telling the rest of the project about
+   * — a speech box finishing, a door reaching the top of its travel.
+   *
+   * NOTHING IS REGISTERED, as with `defineAction`, and for the same reason: an
+   * event is an identity and no more. `World.emit` enqueues against the object
+   * and `Actor.on` matches against it, so nothing has to have been told the
+   * event exists — which is what lets a world handle an event declared in an
+   * `.actor` file it merely imports.
+   *
+   * `ownerId` is this kind, which is what an event says about where it came
+   * from when something has to name it.
+   */
+  defineEvent(id, opts = {}) {
+    return { id, name: opts.name, ownerId: this.id };
+  }
   /** Respond to an event raised for this actor. */
   on(event, handler) {
     this.handlers.push([event, handler]);
     return this;
+  }
+  /**
+   * Respond to an event raised for ANOTHER actor, the one a map places under
+   * `name` — `when ⟨the actor named Resume⟩ is clicked`, written in a Pause
+   * Menu's file about the Button beside it.
+   *
+   * An actor file has no world at module scope to register on, so the
+   * handler is kept here and registered by the world the first time it
+   * places an actor of this kind (`World.useActorKind`), through
+   * `World.named`, which reaches the named actor whenever it arrives. Once
+   * per world and not per instance: two menus would otherwise answer one
+   * click twice.
+   */
+  named(name) {
+    return {
+      on: (event, handler) => {
+        this.namedHandlers.push([name, event, handler]);
+      }
+    };
+  }
+  /** The handlers about named actors this kind declared, for the World. */
+  get ownNamedHandlers() {
+    return this.namedHandlers;
   }
   /**
    * Play an effect on this actor's image (specs/EFFECT_EDITOR.md).
@@ -4801,13 +5580,18 @@ export {
   FOUNDATION_TRAIT_IDS,
   FrameChangedEvent,
   FrameProperty,
+  GainedChildEvent,
+  GotParentEvent,
   IntrinsicSizeProperty,
   LazyActors,
   LeftMapEvent,
+  LostChildEvent,
+  LostParentEvent,
   MoveAction,
   OpacityProperty,
   OutsideMapQuery,
   PIXELS_PER_UNIT,
+  ParentProperty,
   PositionProperty,
   PositionalTrait,
   RemovedEvent,
@@ -4834,14 +5618,18 @@ export {
   addToFront,
   advanceTween,
   all,
+  anyOf,
   beginTween,
+  compose,
   each,
   extreme,
   filtered,
   firstOf,
   firstWhere,
   frameDelay,
+  isSameActor,
   isTweenable,
+  itemOf,
   items,
   lastOf,
   listHas,
@@ -4854,8 +5642,11 @@ export {
   rgba,
   takeFirst,
   taken,
+  text,
   toHex,
+  toLocal,
   tweenDisplaced,
   tweenValue,
-  within
+  within,
+  worldTransformOf
 };
