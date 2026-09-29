@@ -312,6 +312,25 @@ var emptySlot = () => ({
   offset: new Vector(0, 0),
   repeat: false
 });
+var slotFrom = (slot) => ({
+  ...emptySlot(),
+  ...slot?.sprite ? { sprite: slot.sprite } : {},
+  repeat: slot?.repeat ?? false,
+  offset: slot?.offset ? new Vector(slot.offset.x, slot.offset.y) : new Vector(0, 0)
+});
+function layersOfMap(layers) {
+  const made = (layers ?? []).map((layer) => ({
+    ...makeLayer({
+      id: layer.id,
+      name: layer.name,
+      parallax: layer.parallax ? new Vector(layer.parallax.x, layer.parallax.y) : void 0,
+      fit: layer.fit
+    }),
+    background: slotFrom(layer.background),
+    foreground: slotFrom(layer.foreground)
+  }));
+  return made.some((layer) => layer.id === DEFAULT_LAYER_ID) ? made : [makeLayer({ id: DEFAULT_LAYER_ID }), ...made];
+}
 function makeLayer(init) {
   return {
     id: init.id,
@@ -322,6 +341,117 @@ function makeLayer(init) {
     background: emptySlot(),
     foreground: emptySlot()
   };
+}
+
+// src/engine/rules/styled.ts
+var STYLED = {
+  rule: "styled",
+  trait: "hasAStyle",
+  theme: "theme"
+};
+var rule = new RuleBuilder({
+  id: STYLED.rule,
+  name: "Styled",
+  ability: "Has a Style"
+});
+var HasAStyleTrait = rule.addTrait({
+  id: STYLED.trait,
+  name: "Has a Style"
+});
+var ThemeProperty = HasAStyleTrait.addProperty(
+  STYLED.theme,
+  "string",
+  "",
+  { name: "theme" }
+);
+var StyledRule = rule.build();
+
+// src/engine/rules/viewport.ts
+var VIEWPORT = {
+  rule: "viewport",
+  trait: "showsMap",
+  map: "map",
+  scroll: "scroll",
+  content: "content",
+  showsThrough: "showsThrough",
+  showsMap: "showsMap",
+  mirrorsTheWorld: "mirrorsTheWorld",
+  mirrors: "mirrors"
+};
+var rule2 = new RuleBuilder({
+  id: VIEWPORT.rule,
+  name: "Viewport",
+  ability: "Shows a Map"
+});
+var ViewportTrait = rule2.addTrait({
+  id: VIEWPORT.trait,
+  name: "Shows a Map"
+});
+var ViewportMapProperty = ViewportTrait.addProperty(
+  VIEWPORT.map,
+  "string",
+  "",
+  { name: "map" }
+);
+var ViewportScrollProperty = ViewportTrait.addProperty(
+  VIEWPORT.scroll,
+  "vector",
+  { x: 0, y: 0 },
+  { name: "scroll" }
+);
+var ViewportContentProperty = ViewportTrait.addProperty(
+  VIEWPORT.content,
+  "vector",
+  { x: 0, y: 0 },
+  { name: "content", readonly: true }
+);
+var ViewportShowsThroughProperty = ViewportTrait.addProperty(
+  VIEWPORT.showsThrough,
+  "string",
+  "",
+  { name: "shows through" }
+);
+var ViewportShowsMapEvent = rule2.addEvent(VIEWPORT.showsMap, {
+  name: "shows a map"
+});
+var ViewportMirrorsTheWorldProperty = ViewportTrait.addProperty(
+  VIEWPORT.mirrorsTheWorld,
+  "boolean",
+  false,
+  { name: "mirrors the world" }
+);
+var ViewportMirrorsProperty = ViewportTrait.addProperty(VIEWPORT.mirrors, "actor", [], { name: "mirrors" });
+var ViewportRule = rule2.build();
+
+// src/engine/core/anchors.ts
+var ANCHORS = [
+  "top left",
+  "top",
+  "top right",
+  "left",
+  "center",
+  "right",
+  "bottom left",
+  "bottom",
+  "bottom right"
+];
+var isAnchor = (value) => typeof value === "string" && ANCHORS.includes(value);
+var FRACTION = {
+  "top left": { x: 0, y: 0 },
+  top: { x: 0.5, y: 0 },
+  "top right": { x: 1, y: 0 },
+  left: { x: 0, y: 0.5 },
+  center: { x: 0.5, y: 0.5 },
+  right: { x: 1, y: 0.5 },
+  "bottom left": { x: 0, y: 1 },
+  bottom: { x: 0.5, y: 1 },
+  "bottom right": { x: 1, y: 1 }
+};
+var anchorPoint = (size, anchor) => new Vector(size.x * FRACTION[anchor].x, size.y * FRACTION[anchor].y);
+function anchored(at, anchor, map, view) {
+  const from = anchorPoint(map, anchor);
+  const to = anchorPoint(view, anchor);
+  return new Vector(at.x - from.x + to.x, at.y - from.y + to.y);
 }
 
 // src/engine/core/spatialKeys.ts
@@ -338,8 +468,7 @@ var SPATIAL = {
   // core reaches the rule's members by id (`World.renderSnapshot` does the
   // same for the transform).
   created: "created",
-  // …and the other end of the same fact. Not raised by `clear world`, which
-  // empties a world rather than removing anybody from it (`rules/spatial`).
+  // …and the other end of the same fact (`rules/spatial`).
   removed: "removed",
   // Parenting (specs/PARENTING.md): the actor this one is carried by, and the
   // four events a change of parent raises. The transform properties above hold
@@ -389,12 +518,13 @@ function all(value) {
 }
 function each(value, body) {
   for (const actor of all(value)) {
-    body(actor);
+    inHand(actor, () => body(actor));
   }
 }
+var inHand = (actor, fn) => actor.world ? actor.world.withActor(actor, fn) : fn();
 function firstWhere(actors, where) {
   for (const actor of actors) {
-    if (where(actor)) {
+    if (inHand(actor, () => where(actor))) {
       return [actor];
     }
   }
@@ -432,7 +562,7 @@ function filtered(value, where) {
   const source = held(value);
   return new LazyActors(function* () {
     for (const actor of source) {
-      if (where(actor)) {
+      if (inHand(actor, () => where(actor))) {
         yield actor;
       }
     }
@@ -480,6 +610,10 @@ function firstOf(value) {
     return [actor];
   }
   return [];
+}
+function inThisSpace(world, value) {
+  const space = world.spaceOf(world.actorInHand());
+  return filtered(value, (actor) => actor.space === space);
 }
 function isSameActor(a, b) {
   const one2 = firstOf(a)[0];
@@ -530,6 +664,14 @@ function takeFirst(list) {
   const first = list.shift();
   touched(list);
   return first;
+}
+function without(list, place) {
+  const all2 = items(list);
+  const at = Math.trunc(Number(place));
+  if (!Number.isFinite(at) || at < 1 || at > all2.length) {
+    return [...all2];
+  }
+  return [...all2.slice(0, at - 1), ...all2.slice(at)];
 }
 function addTo(list, value) {
   if (Array.isArray(list)) {
@@ -833,6 +975,33 @@ var Camera = class {
    * camera.world`, exactly as an actor's binds it from the actor.
    */
   world;
+  /**
+   * The space this camera looks at, for a space that owns cameras of its own.
+   *
+   * `undefined` for the world's, which look at the root — `World.spaceOf`
+   * answers with the root space for anything that names none, so the world's
+   * cameras need say nothing and behave as they always have.
+   *
+   * WHY A CAMERA NEEDS TO KNOW. A camera step runs with its camera in hand
+   * (`world.enter(camera)`, from the loop a camera-scoped trait step
+   * generates), and what the world is asked without a subject — the map's size,
+   * the size of the view — is answered for the space the thing in hand is in.
+   * So `Camera Confined to the Map` asks `map size` and gets the space's bounds
+   * and the Viewport's window rather than the world's, and confining a
+   * Viewport's camera means what it says (specs/SPACE_CAMERAS_PLAN.md).
+   */
+  space;
+  /**
+   * The Viewport whose rectangle this camera draws into, for a camera a
+   * Viewport owns.
+   *
+   * Distinct from {@link space} once a Viewport can mirror the world
+   * (specs/MIRRORING_PLAN.md): a mirror's camera looks at the ROOT — so actor
+   * queries with it in hand answer about the root — but is seen through the
+   * Viewport's window, which is what `view size` and `Confined to the Map` have
+   * to measure by. For a Viewport with a space of its own the two agree.
+   */
+  window;
   id;
   name;
   /** Mutable: moving the camera is the whole point of having one. */
@@ -895,6 +1064,45 @@ function makeCamera(init) {
   return new Camera(init);
 }
 
+// src/engine/core/clock.ts
+var TIME_PARTS = [
+  "year",
+  "month",
+  "day",
+  "hour",
+  "minute",
+  "second",
+  "weekday"
+];
+var isTimePart = (value) => typeof value === "string" && TIME_PARTS.includes(value);
+var NO_CLOCK = 946684800;
+function partsOf(seconds, offsetMinutes = 0) {
+  const at = new Date((Math.floor(seconds) + offsetMinutes * 60) * 1e3);
+  return {
+    year: at.getUTCFullYear(),
+    month: at.getUTCMonth() + 1,
+    day: at.getUTCDate(),
+    hour: at.getUTCHours(),
+    minute: at.getUTCMinutes(),
+    second: at.getUTCSeconds(),
+    // `getUTCDay` is 0 for Sunday; this counts Monday as one, so Sunday is
+    // seven and the working week reads 1–5.
+    weekday: (at.getUTCDay() + 6) % 7 + 1
+  };
+}
+var partOf = (seconds, part, offsetMinutes = 0) => partsOf(seconds, offsetMinutes)[part];
+var TIME_STYLES = ["date", "clock", "both"];
+var pad = (value, width = 2) => String(Math.abs(value)).padStart(width, "0");
+function timeText(seconds, style = "date", offsetMinutes = 0) {
+  const at = partsOf(seconds, offsetMinutes);
+  const date = `${pad(at.year, 4)}-${pad(at.month)}-${pad(at.day)}`;
+  const clock = `${pad(at.hour)}:${pad(at.minute)}`;
+  if (style === "date") {
+    return date;
+  }
+  return style === "clock" ? clock : `${date} ${clock}`;
+}
+
 // src/engine/core/color.ts
 var clamp01 = (value) => Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
 function channels(value) {
@@ -923,6 +1131,14 @@ function rgb(value) {
 }
 function rgba(value) {
   return channels(value);
+}
+function cssColor(value) {
+  if (!Array.isArray(value)) {
+    return String(value ?? "");
+  }
+  const [r, g, b, a] = channels(value);
+  const byte = (channel) => Math.round(channel * 255);
+  return `rgba(${byte(r)}, ${byte(g)}, ${byte(b)}, ${a})`;
 }
 function toHex(color) {
   const channel = (index) => Math.round(clamp01(Number(color?.[index] ?? 0)) * 255).toString(16).padStart(2, "0");
@@ -957,18 +1173,52 @@ var CommandPen = class {
   currentFill = DEFAULT_FILL;
   currentStroke = void 0;
   currentWidth = 1;
+  currentRadius = 0;
+  currentShadow = void 0;
+  currentBold = false;
   paint() {
     return {
       ...this.currentFill === void 0 ? {} : { fill: this.currentFill },
       ...this.currentStroke === void 0 ? {} : { stroke: this.currentStroke },
-      strokeWidth: this.currentWidth
+      strokeWidth: this.currentWidth,
+      ...this.currentShadow === void 0 ? {} : { shadow: this.currentShadow }
     };
   }
+  // SETTLED HERE, not in the driver. A color arrives as a hex string or as
+  // four floats depending on which block produced it (`core/color`), and a
+  // command carries the paint it was drawn with — so the command list, which
+  // is also the cache key, should hold one spelling of a color rather than
+  // two spellings of the same one.
+  /**
+   * AN UNSET COLOUR LEAVES WHAT THE PEN HAD, which is the third state a colour
+   * needs and did not have.
+   *
+   * `text color` is a per-instance property, so a Button's caption reads it —
+   * and its default was `#ffffff`, which is not a choice anybody made and
+   * which overrode whatever the actor's style had just set. Classic's dark
+   * caption therefore never landed, and a white caption sat on a light grey
+   * face (specs/STYLES_PLAN.md).
+   *
+   * So that default is now EMPTY, and painting with an empty colour keeps
+   * what was there. It is the same absent-leaves-alone rule a style field
+   * already follows, one level down, and it needs no branch in any drawing:
+   * every text row is preceded by its `use style`, so there is always a
+   * class-provided fill underneath. A project with no theme is unchanged,
+   * because the pen's own default fill is `#ffffff` — exactly what the
+   * property's default was.
+   *
+   * `no fill` remains how a drawing says NONE. Empty is "I have no opinion";
+   * none is an opinion.
+   */
   fill(color) {
-    this.currentFill = color;
+    const settled = cssColor(color);
+    if (settled === "") {
+      return;
+    }
+    this.currentFill = settled;
   }
   outline(color, width) {
-    this.currentStroke = color;
+    this.currentStroke = cssColor(color);
     this.currentWidth = width;
   }
   noFill() {
@@ -977,8 +1227,86 @@ var CommandPen = class {
   noOutline() {
     this.currentStroke = void 0;
   }
+  /**
+   * Round corners, from here on.
+   *
+   * NO `noCorner()` TO GO WITH IT, where fill and outline each have their
+   * absence as a block. A radius of zero IS square and reads as square; an
+   * absent fill is not a fill of nothing, which is why those two needed a
+   * word of their own and this does not.
+   *
+   * Clamped at zero because a negative radius is not a shape — `roundRect`
+   * throws on one, and a drawing that computed its corner from the box would
+   * take the whole picture down for a box briefly smaller than nothing.
+   */
+  corner(radius) {
+    this.currentRadius = Math.max(0, radius);
+  }
+  shadow(color, blur, offsetY) {
+    this.currentShadow = {
+      color: cssColor(color),
+      blur: Math.max(0, blur),
+      offsetY
+    };
+  }
+  noShadow() {
+    this.currentShadow = void 0;
+  }
+  weight(bold) {
+    this.currentBold = bold;
+  }
+  /**
+   * Take a style, field by field.
+   *
+   * A STYLE THAT IS NOT THERE CHANGES NOTHING. Naming a style the active
+   * theme lacks leaves the pen exactly as it was — which draws the control in
+   * whatever came before, usually the pen's own white. That is on purpose:
+   * the alternative is a control that vanishes, and a learner cannot act on a
+   * thing that is not on the screen. The theme keeps the name so a sandbox
+   * can say which one was missing (`ResolvedTheme.unresolved`).
+   *
+   * ABSENT LEAVES ALONE, NULL CLEARS. A style that says nothing about the
+   * outline keeps whatever outline the pen had, so `use style ⟨chosen row⟩`
+   * can change a fill and keep a corner; one that says `"stroke": null` means
+   * no outline and says so.
+   */
+  useStyle(style) {
+    if (!style) {
+      return;
+    }
+    if (style.fill !== void 0) {
+      this.currentFill = style.fill ?? void 0;
+    }
+    if (style.stroke !== void 0) {
+      this.currentStroke = style.stroke ?? void 0;
+    }
+    if (style.strokeWidth !== void 0) {
+      this.currentWidth = style.strokeWidth;
+    }
+    if (style.corner !== void 0) {
+      this.currentRadius = Math.max(0, style.corner);
+    }
+    if (style.shadow !== void 0) {
+      this.currentShadow = style.shadow ?? void 0;
+    }
+    if (style.weight !== void 0) {
+      this.currentBold = style.weight === "bold";
+    }
+  }
   rectangle(x, y, width, height) {
-    this.commands.push({ op: "rectangle", x, y, width, height, ...this.paint() });
+    this.commands.push({
+      op: "rectangle",
+      x,
+      y,
+      width,
+      height,
+      // Never wider than the box can hold: two corners of half the width
+      // each meet in the middle, and asking for more draws a shape the
+      // canvas has no room for. Said here rather than in the driver so the
+      // KEY says what was drawn.
+      ...this.currentRadius > 0 ? { radius: Math.min(this.currentRadius, width / 2, height / 2) } : {},
+      ...this.paint()
+    });
   }
   circle(x, y, radius) {
     this.commands.push({ op: "circle", x, y, radius, ...this.paint() });
@@ -1000,6 +1328,7 @@ var CommandPen = class {
       x2,
       y2,
       strokeWidth: paint.strokeWidth,
+      ...paint.shadow === void 0 ? {} : { shadow: paint.shadow },
       ...paint.stroke === void 0 ? paint.fill === void 0 ? {} : { stroke: paint.fill } : { stroke: paint.stroke }
     });
   }
@@ -1016,6 +1345,7 @@ var CommandPen = class {
       // every unwrapped line would differ from every drawing made before this
       // existed, and re-rasterize the lot.
       ...wrapWidth !== void 0 && wrapWidth > 0 ? { wrapWidth } : {},
+      ...this.currentBold ? { weight: "bold" } : {},
       ...this.paint()
     });
   }
@@ -1038,20 +1368,8 @@ function effectContentHash(effect) {
 // src/engine/core/EventQueue.ts
 var EventQueue = class {
   pending = [];
-  enqueue(event, actor, detail) {
-    this.pending.push({ event, actor, detail });
-  }
-  /**
-   * Whether this exact event is already queued for this actor.
-   *
-   * So a caller can raise something AT MOST ONCE a tick without keeping a flag
-   * of its own: the queue is cleared on flush, so "already pending" and "already
-   * raised this tick" are the same question.
-   */
-  isPending(event, actor) {
-    return this.pending.some(
-      (queued) => queued.event === event && queued.actor === actor
-    );
+  enqueue(event, actor, ...values) {
+    this.pending.push({ event, actor, values });
   }
   size() {
     return this.pending.length;
@@ -1066,15 +1384,15 @@ var EventQueue = class {
   flush(world) {
     const batch = this.pending;
     this.pending = [];
-    for (const { event, actor, detail } of batch) {
+    for (const { event, actor, values } of batch) {
       if (!actor) {
         for (const handler of world.handlersFor(event)) {
-          handler(world, detail);
+          handler(world, ...values);
         }
         continue;
       }
       for (const handler of actor.handlersFor(event)) {
-        handler(world, actor, detail);
+        world.withActor(actor, () => handler(world, actor, ...values));
       }
     }
   }
@@ -1109,6 +1427,8 @@ var NAMED_KEYS = [
   // (specs/UI_ACTORS.md).
   ["shift", "Shift"]
 ];
+var KEY_REPEAT_DELAY = 0.4;
+var KEY_REPEAT_INTERVAL = 0.06;
 var RESERVED_KEYS = /* @__PURE__ */ new Set(["escape"]);
 var BY_DOM_KEY = new Map(
   NAMED_KEYS.map(([name, domKey]) => [domKey, name])
@@ -1269,22 +1589,22 @@ var phaseIndex = (id) => INDEX.get(id);
 
 // src/engine/core/ruleIds.ts
 var placement = (order) => order.kind === "before" || order.kind === "after" ? `${order.kind} ${order.anchor.ownerId}.${order.anchor.id}` : order.kind;
-function codeOf(rule3) {
+function codeOf(rule6) {
   const parts = [];
   const each2 = (record, write) => Object.keys(record).sort().forEach((key) => write(record[key]));
   each2(
-    rule3.steps,
+    rule6.steps,
     (step) => parts.push(`step ${step.id} ${placement(step.order)} ${step.run}`)
   );
   each2(
-    rule3.actions,
+    rule6.actions,
     (action) => parts.push(`action ${action.id} ${action.apply}`)
   );
   each2(
-    rule3.queries,
+    rule6.queries,
     (query) => parts.push(`query ${query.id} ${query.evaluate}`)
   );
-  each2(rule3.traits, (trait) => {
+  each2(rule6.traits, (trait) => {
     each2(
       trait.actions,
       (action) => parts.push(`${trait.id} action ${action.id} ${action.apply}`)
@@ -1296,8 +1616,8 @@ function codeOf(rule3) {
   });
   return parts.join("\n");
 }
-function ruleContentHash(rule3) {
-  return fnv1a(codeOf(rule3));
+function ruleContentHash(rule6) {
+  return fnv1a(codeOf(rule6));
 }
 
 // src/engine/core/Scheduler.ts
@@ -1429,6 +1749,103 @@ function requireAnchor(step, anchor, index) {
   }
 }
 
+// src/engine/core/Space.ts
+var ROOT_SPACE_ID = "main";
+var Space = class {
+  id;
+  /** The Viewport this is the space of; none for the root. */
+  owner;
+  /** How big the space is — the largest map loaded into it. */
+  bounds;
+  /**
+   * The cameras this space may be seen through, its main one first.
+   *
+   * EMPTY FOR THE ROOT, whose cameras are the world's own `cameraList` — the
+   * world owns them directly, having no placement to own them for it
+   * (specs/SPACE_CAMERAS_PLAN.md). A Viewport's are here because a camera's
+   * position belongs to a space and means nothing in another, so a Viewport
+   * showing a different scene cannot share the world's.
+   *
+   * A LIST because a Viewport may want more than one framing — a wide shot and
+   * a chase — exactly as the world may. Which of them the view is taken
+   * through is the Viewport's own business to say; until it does, it is the
+   * first, which is the space's `main`.
+   */
+  cameras;
+  /**
+   * Which of this space's cameras the view is taken through, by name.
+   *
+   * Kept in step with the owning Viewport's `shows through` property once a
+   * tick (`World.settleSpaces`), which is where the same sync notices a change
+   * to the map it holds. Here rather than read from the property directly
+   * because a space has no way to ask one: properties belong to rules, and a
+   * space is core.
+   */
+  activeCameraName = DEFAULT_CAMERA_ID;
+  /**
+   * The camera the space is currently seen through, if it has any.
+   *
+   * The one `activeCameraName` names, or the space's main camera — which is the
+   * first, always exists and cannot be taken away. `undefined` for the root,
+   * whose view is taken through the world's active camera as it always was.
+   *
+   * A name no camera has falls back rather than answering nothing, for the
+   * reason `World.camera` does the same with an unknown id: the name arrives
+   * from a field or from generated code, and a view through nothing is not a
+   * better answer than a view through the default.
+   */
+  get camera() {
+    return this.cameras.find((camera) => camera.name === this.activeCameraName) ?? this.cameras[0];
+  }
+  /**
+   * One of this space's cameras by the name it was declared under.
+   *
+   * BY NAME AND NOT BY ID, because a space's camera ids carry the space —
+   * `win:wide`, so that two Viewports may each have a `wide` and a list of
+   * every camera in the world still tells them apart. What an author writes,
+   * and what the Viewport's own property holds, is the bare name.
+   */
+  cameraNamed(name) {
+    return this.cameras.find((camera) => camera.name === name);
+  }
+  /**
+   * The space this Viewport SHOWS instead of one of its own — the root, or
+   * another Viewport's — or undefined for a Viewport with a scene of its own
+   * (specs/MIRRORING_PLAN.md).
+   *
+   * A mirror holds no loads and grows nothing: its bounds are its target's,
+   * kept in step each tick, and its cameras look at the target — `Camera.space`
+   * is the target for each of them, so `in this space`, `map size` and
+   * everything else asked with one in hand answers about the scene it shows.
+   * What stays the mirror's own is its cameras and its window.
+   */
+  mirrorOf;
+  /** Whether this Viewport shows some other space's scene. */
+  get mirrors() {
+    return this.mirrorOf !== void 0;
+  }
+  /** The loads this space holds, oldest first — `unload` takes them back. */
+  loads = [];
+  /**
+   * The space's own layers, back to front, from the map loaded into it
+   * (specs/LAYERS_PLAN.md). Empty for the root, whose layers are the
+   * world's and fixed when the world is built; a space's are the driver's
+   * to build, so a map brings them.
+   */
+  layers = [];
+  /**
+   * The path the Viewport's `map` property held when its map was last
+   * loaded, so a change to the property is noticed (`World.showHeldMap`).
+   */
+  shown;
+  constructor(id, owner, bounds, cameras = []) {
+    this.id = id;
+    this.owner = owner;
+    this.bounds = bounds;
+    this.cameras = cameras;
+  }
+};
+
 // src/engine/core/spatialIndex.ts
 var CELL = 64;
 var keyOf = (column, row) => (
@@ -1496,10 +1913,156 @@ function text(value) {
   return Array.isArray(value) ? value.map(text).join(" ") : String(value);
 }
 
+// src/engine/core/theme.ts
+var REFERENCE = /^\$(.+)$/;
+var NO_THEME = {
+  name: "",
+  tokens: {},
+  styles: /* @__PURE__ */ new Map(),
+  unresolved: []
+};
+function follow(value, tokens, unresolved) {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const match = REFERENCE.exec(value);
+  if (!match) {
+    return value;
+  }
+  const found = tokens[match[1]];
+  if (found === void 0) {
+    unresolved.push(value);
+    return void 0;
+  }
+  return found;
+}
+var asNumber = (value) => {
+  const number = typeof value === "string" ? Number(value) : value;
+  return number === void 0 || !Number.isFinite(number) ? void 0 : number;
+};
+var asColor = (value) => value === void 0 ? void 0 : cssColor(String(value));
+function resolveTheme(document, parentAt, seen = []) {
+  const source = document ?? {};
+  const unresolved = [];
+  let inherited = NO_THEME;
+  const parent = typeof source.extends === "string" ? source.extends : "";
+  if (parent && parentAt) {
+    if (seen.includes(parent)) {
+      unresolved.push(`extends ${parent}`);
+    } else {
+      inherited = resolveTheme(parentAt(parent), parentAt, [...seen, parent]);
+      unresolved.push(...inherited.unresolved);
+    }
+  }
+  const tokens = { ...inherited.tokens, ...source.tokens ?? {} };
+  const styles = new Map(inherited.styles);
+  for (const [name, spec] of Object.entries(source.styles ?? {})) {
+    if (!spec || typeof spec !== "object") {
+      continue;
+    }
+    const style = {};
+    if ("fill" in spec) {
+      style.fill = spec.fill === null ? null : asColor(follow(spec.fill, tokens, unresolved)) ?? null;
+    }
+    if ("stroke" in spec) {
+      style.stroke = spec.stroke === null ? null : asColor(follow(spec.stroke, tokens, unresolved)) ?? null;
+    }
+    if ("strokeWidth" in spec) {
+      style.strokeWidth = asNumber(
+        follow(spec.strokeWidth, tokens, unresolved)
+      );
+    }
+    if ("corner" in spec) {
+      style.corner = asNumber(follow(spec.corner, tokens, unresolved));
+    }
+    if ("weight" in spec) {
+      style.weight = spec.weight === "bold" ? "bold" : "normal";
+    }
+    if ("shadow" in spec) {
+      const cast = spec.shadow;
+      style.shadow = cast === null || !cast ? null : {
+        color: asColor(follow(cast.color, tokens, unresolved)) ?? "#000000",
+        blur: Math.max(
+          0,
+          asNumber(follow(cast.blur, tokens, unresolved)) ?? 0
+        ),
+        offsetY: asNumber(follow(cast.down, tokens, unresolved)) ?? 0
+      };
+    }
+    styles.set(name, { ...styles.get(name), ...style });
+  }
+  return {
+    name: String(source.name ?? ""),
+    tokens,
+    styles,
+    unresolved
+  };
+}
+
 // src/engine/core/World.ts
-var nameOf = (id) => id.replace(/#\d+$/, "");
 var SENSE = phaseIndex("sense") ?? 0;
 var whilePaused = (step) => step.order.kind === "phase" && (phaseIndex(step.order.phase) ?? Infinity) <= SENSE;
+var MapLoad = class {
+  unloadHandlers = [];
+  world;
+  /**
+   * The list this load is ON, so it can take itself off.
+   *
+   * A space keeps its loads oldest first and nothing used to come off that
+   * list except by clearing the whole of it — which was harmless while the
+   * only question asked of it was "unload everything", and is wrong the
+   * moment anything asks which load is on TOP. `go back` asks exactly that
+   * (specs/SCREENS_PLAN.md).
+   */
+  among;
+  /** Every actor this load placed, in placement order. */
+  actors;
+  /**
+   * Whether this load COVERS what is under it — a dialog rather than a HUD.
+   *
+   * Input stops at the topmost modal load: everything placed by it or by a
+   * load above it can be clicked, tabbed to and typed at, and everything
+   * below cannot (`World.canReach`). A screen is modal; an overlay is not,
+   * and the difference is not "which is on top" — an on-screen keyboard sits
+   * ABOVE the form it types into and must not lock it out
+   * (specs/MODALITY_PLAN.md).
+   */
+  modal;
+  /** The theme this map named, or empty — see `WorldMap.theme`. */
+  theme;
+  constructor(world, actors, among = [], modal = false, theme = "") {
+    this.world = world;
+    this.actors = actors;
+    this.among = among;
+    this.modal = modal;
+    this.theme = theme;
+  }
+  /**
+   * Remove everything this load placed.
+   *
+   * Through `removeActor`, so a parent's children go with it and the
+   * `is removed` events fire — the same removal a handler writes by hand —
+   * and deferred to the end of the tick when asked mid-tick, as that is.
+   * An actor already gone is skipped, not an error: a script that removed
+   * the ball itself may still unload the level.
+   */
+  unload() {
+    const at = this.among.indexOf(this);
+    if (at >= 0) {
+      this.among.splice(at, 1);
+    }
+    for (const handler of this.unloadHandlers) {
+      handler(this.world);
+    }
+    for (const actor of this.actors) {
+      this.world.removeActor(actor);
+    }
+  }
+  /** Hear this load being unloaded — `when this map unloads`. */
+  onUnload(handler) {
+    this.unloadHandlers.push(handler);
+  }
+};
 var slotValues = (layer, slot) => ({
   layer,
   ...slot.sprite === void 0 ? {} : { sprite: slot.sprite },
@@ -1518,15 +2081,37 @@ var coerce2 = (property, value) => {
 };
 var CameraCollection = class {
   list;
-  constructor(list) {
+  spaces;
+  /**
+   * `list` is the world's own cameras — the root space's. `spaces` answers with
+   * the Viewport spaces, whose cameras are theirs (`Space.cameras`).
+   *
+   * BOTH, because a camera rule finds its subjects through here and a
+   * Viewport's camera was never offered to one: the collection wrapped the
+   * world's list alone, so following a subject had to be written a second time
+   * in the engine (specs/SPACE_CAMERAS_PLAN.md).
+   *
+   * A function rather than the array, because Viewports are placed as a world
+   * runs and a collection built once would answer about the spaces there were.
+   */
+  constructor(list, spaces) {
     this.list = list;
+    this.spaces = spaces;
+  }
+  /** Every camera in the world, the root's first and then each space's. */
+  all() {
+    const found = [...this.list];
+    for (const space of this.spaces()) {
+      found.push(...space.cameras);
+    }
+    return found;
   }
   /** Every camera with a trait — a copy, so a body may add one while walking. */
   with(trait) {
-    return this.list.filter((camera) => camera.has(trait));
+    return this.all().filter((camera) => camera.has(trait));
   }
   [Symbol.iterator]() {
-    return this.list[Symbol.iterator]();
+    return this.all()[Symbol.iterator]();
   }
 };
 var ActorCollection = class {
@@ -1586,8 +2171,8 @@ var World = class {
   name;
   actors;
   membership = new DependencySet(
-    (rule3) => rule3.requires,
-    (rule3) => rule3.id
+    (rule6) => rule6.requires,
+    (rule6) => rule6.id
   );
   store = /* @__PURE__ */ new Map();
   actorList = [];
@@ -1633,8 +2218,6 @@ var World = class {
   // Which actor kinds have already contributed, by the TYPE they were placed
   // under: a kind contributes once however many of it there are.
   kindsWithSteps = /* @__PURE__ */ new Set();
-  /** The kinds whose handlers about named actors are registered already. */
-  kindsWithNamedHandlers = /* @__PURE__ */ new Set();
   /** How each kind that describes its own picture draws itself, by type. */
   kindDrawings = /* @__PURE__ */ new Map();
   /** The properties this world declared for itself — see `defineOwnProperty`. */
@@ -1657,7 +2240,42 @@ var World = class {
    * failure is silent: `x of ⟨map size⟩` is `undefined`, the arithmetic around
    * it is NaN, and nothing throws.
    */
-  bounds = new Vector(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+  get bounds() {
+    return this.rootSpace.bounds;
+  }
+  set bounds(value) {
+    this.rootSpace.bounds = value;
+  }
+  /**
+   * The world's spaces (specs/VIEWPORT_PLAN.md): the root, which the main
+   * map and every `load map` fill, and one per Viewport placed. Every actor
+   * is in exactly one; see `Actor.space`.
+   */
+  rootSpace = new Space(
+    ROOT_SPACE_ID,
+    void 0,
+    new Vector(VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
+    // No cameras of its own: the root's are the world's `cameraList`, which it
+    // owns directly for want of a placement to own them for it
+    // (specs/SPACE_CAMERAS_PLAN.md).
+  );
+  viewportSpaces = [];
+  /**
+   * The camera traits each kind elected, by type, for the main camera of the
+   * space a Viewport of that kind gets (`ActorBuilder.useCameraTraits`).
+   */
+  kindCameraTraits = /* @__PURE__ */ new Map();
+  /**
+   * The actor IN HAND: the subject whose handler is running, the actor a
+   * per-kind step or a loop is at, the candidate a predicate is asked about.
+   * What the world is asked without an actor — the map's size, the mouse's
+   * place, what is near a point, where to put a spawn — is answered for this
+   * actor's space, so a rule written before spaces existed keeps meaning
+   * what it meant in each space (specs/VIEWPORT_PLAN.md).
+   */
+  inHand = [];
+  /** The project's maps by module path — see `defineMap`. */
+  maps = /* @__PURE__ */ new Map();
   /**
    * How much of the world is on screen at once, in pixels — the game's native
    * resolution. Ten tiles square unless the world says otherwise
@@ -1707,11 +2325,20 @@ var World = class {
   // added or removed while the world runs (they are structural — a layer cannot
   // be spliced into a live scene graph, see `snapshot`).
   layerIndex = /* @__PURE__ */ new Map();
+  // Which load placed each actor, for `canReach`. A WeakMap because an actor
+  // removed from the world should not be held alive by this, and because the
+  // question is only ever asked of an actor somebody already has in hand.
+  loadOf = /* @__PURE__ */ new WeakMap();
   // The set of currently-pressed input keys, refreshed by the driver each frame
   // before `tick` (the engine is DOM-free, so input arrives as plain data).
   // Rule steps read it through `isKeyDown`; keys carry OUR names — 'left arrow',
   // 'a', 'space' — which the driver translates the DOM's into (core/keys).
   keys = /* @__PURE__ */ new Set();
+  // What the DRIVER last said, before anything the world pressed itself is
+  // folded in. `keys` is the two together and is what everything reads; this
+  // is kept apart so that a key the world pressed lasts one frame rather than
+  // sticking until the driver next speaks (`pendingKeys`).
+  held = /* @__PURE__ */ new Set();
   /**
    * The characters TYPED since the last tick, in the order they were typed.
    *
@@ -1725,6 +2352,31 @@ var World = class {
    * Drained by `tick`, so a frame sees exactly what was typed into it.
    */
   typed = [];
+  /**
+   * What the WORLD typed, waiting for the next frame.
+   *
+   * A SEPARATE QUEUE FROM THE ONE ABOVE, because of when it is filled. The
+   * driver adds to `typed` between frames, which is before the Input rule's
+   * step reads it; a block adds here from a handler, and handlers run after
+   * every step and before the drain — so a character added to `typed` from an
+   * on-screen keyboard would be cleared at the end of the same tick without
+   * ever having been read (specs/KEYBOARD_PLAN.md).
+   *
+   * Folded into `typed` at the top of the next `tick`, in FRONT of that
+   * frame's own: an on-screen key was pressed a frame ago and a real keystroke
+   * arrived since, so that is the order they happened in.
+   */
+  pendingTyped = [];
+  /**
+   * Keys the world pressed, waiting for the next frame — same reasoning.
+   *
+   * Held for exactly one tick, which is what makes it a keystroke rather than
+   * a key held down: the frame it is folded into is a rising edge against the
+   * previous frame's set, and the frame after — with nothing pending — is a
+   * falling edge. The Input rule turns both into events without knowing either
+   * came from a button.
+   */
+  pendingKeys = /* @__PURE__ */ new Set();
   /**
    * Keys the game has asked the browser to leave alone.
    *
@@ -1769,6 +2421,31 @@ var World = class {
    * Undefined is the headless case and answers zero rather than guessing.
    */
   measure;
+  /**
+   * What time it is out there, and which zone that is — lent by the driver.
+   *
+   * THE THIRD THING THE ENGINE CANNOT KNOW, beside the width of a letter and
+   * the browser's storage, and lent the same way and for the same reason: this
+   * half has no machine and no locale by design, and `time` answers a
+   * different question — seconds since the world STARTED, which is what a
+   * cooldown is measured in (specs/CLOCK_PLAN.md).
+   *
+   * Undefined is the headless case and answers a FIXED moment rather than the
+   * real one (`core/clock`, NO_CLOCK). A test, a rule demo and a check all run
+   * headless, and a clock that answered the real time there would make every
+   * one of them differ between runs.
+   */
+  clock;
+  zoneOffset = 0;
+  /**
+   * The moment this frame is at, sampled once at the top of `tick`.
+   *
+   * For the same reason `elapsed` is advanced there: every step and handler in
+   * one frame should read ONE value, or two blocks a line apart could land on
+   * opposite sides of a second and a project that compared them would see time
+   * run backwards within a frame.
+   */
+  moment = NO_CLOCK;
   /** Actor templates by the module path a map names them with (`define`). */
   types = /* @__PURE__ */ new Map();
   // The previous tick's pressed set, so a rule step can detect rising/falling
@@ -1789,20 +2466,20 @@ var World = class {
     this.id = init.id;
     this.name = init.name;
     this.actors = new ActorCollection(this.actorList);
-    for (const rule3 of init.rules) {
-      this.membership.add(rule3);
+    for (const rule6 of init.rules) {
+      this.membership.add(rule6);
     }
     const rules = this.membership.items();
-    for (const rule3 of rules) {
-      for (const property of Object.values(rule3.properties)) {
+    for (const rule6 of rules) {
+      for (const property of Object.values(rule6.properties)) {
         this.store.set(property, coerce2(property, property.default));
       }
     }
     for (const property of init.ownProperties ?? []) {
       this.defineOwnProperty(property, property.default);
     }
-    for (const rule3 of rules) {
-      for (const [id, def] of Object.entries(rule3.animations)) {
+    for (const rule6 of rules) {
+      for (const [id, def] of Object.entries(rule6.animations)) {
         this.animationDefs.set(id, def);
       }
     }
@@ -1819,12 +2496,15 @@ var World = class {
       (layer, index) => this.layerIndex.set(layer.id, index)
     );
     this.cameraList = [makeCamera({ id: DEFAULT_CAMERA_ID })];
-    this.cameraCollection = new CameraCollection(this.cameraList);
+    this.cameraCollection = new CameraCollection(
+      this.cameraList,
+      () => this.viewportSpaces
+    );
     for (const camera of this.cameraList) {
       camera.world = this;
     }
-    for (const rule3 of rules) {
-      this.stepList.push(...Object.values(rule3.steps));
+    for (const rule6 of rules) {
+      this.stepList.push(...Object.values(rule6.steps));
     }
     this.scheduler = new Scheduler(this.stepList);
   }
@@ -1874,8 +2554,6 @@ var World = class {
   inTick = false;
   /** Whether the game is paused — see {@link pause}. */
   paused = false;
-  /** Handlers registered against a placement NAME — see {@link named}. */
-  namedHandlers = /* @__PURE__ */ new Map();
   /**
    * Whether the world is inside a frame right now.
    *
@@ -1969,12 +2647,8 @@ var World = class {
     if (template.ownDrawing && !this.kindDrawings.has(type)) {
       this.kindDrawings.set(type, template.ownDrawing);
     }
-    const named = template.ownNamedHandlers ?? [];
-    if (named.length && !this.kindsWithNamedHandlers.has(type)) {
-      this.kindsWithNamedHandlers.add(type);
-      for (const [name, event, handler] of named) {
-        this.named(name).on(event, handler);
-      }
+    if (template.cameraTraits?.length && !this.kindCameraTraits.has(type)) {
+      this.kindCameraTraits.set(type, template.cameraTraits);
     }
     const steps = template.ownSteps ?? [];
     if (!steps.length || this.kindsWithSteps.has(type)) {
@@ -1988,7 +2662,7 @@ var World = class {
         order: { kind: "phase", phase: step.phase },
         run: (world, delta) => {
           for (const actor of world.actors.ofType(type)) {
-            step.run(actor, world, delta);
+            world.withActor(actor, () => step.run(actor, world, delta));
           }
         }
       });
@@ -2010,15 +2684,31 @@ var World = class {
   scaleProperty() {
     return this.positionalProperty(SPATIAL.scale);
   }
+  /**
+   * The `Has a Style` trait's `theme`, if this world's rules declare it.
+   *
+   * Asked of the RULES rather than imported, exactly as the positional
+   * properties above are: the rule is a foundation one, but a world that
+   * shadowed it with one of its own should be answered from the rule that is
+   * actually in play.
+   */
+  styleThemeProperty() {
+    const styled = this.membership.items().find((r) => r.id === STYLED.rule);
+    const trait = styled?.traits[STYLED.trait];
+    return trait?.properties[STYLED.theme];
+  }
   positionalProperty(id) {
     const spatial = this.membership.items().find((r) => r.id === SPATIAL.rule);
     const positional = spatial?.traits[SPATIAL.trait];
     return positional?.properties[id];
   }
-  place(actor, layer = DEFAULT_LAYER_ID) {
+  place(actor, layer = DEFAULT_LAYER_ID, space) {
     actor.world = this;
     actor.bornAt = this.elapsed;
-    actor.layer = this.layerIndex.has(layer) ? layer : DEFAULT_LAYER_ID;
+    const target = space ?? this.spaceOf(this.inHand.at(-1));
+    const known = target === this.rootSpace ? this.layerIndex.has(layer) : target.layers.some((held2) => held2.id === layer);
+    actor.layer = known ? layer : DEFAULT_LAYER_ID;
+    actor.space = space ?? this.spaceOf(this.inHand.at(-1));
     const drawing = this.kindDrawings.get(actor.type);
     if (drawing) {
       const property = this.intrinsicSizeProperty();
@@ -2029,8 +2719,18 @@ var World = class {
     }
     this.actorList.push(actor);
     this.actorsById.set(actor.id, (this.actorsById.get(actor.id) ?? 0) + 1);
-    for (const [event, handler] of this.namedHandlers.get(nameOf(actor.id)) ?? []) {
-      actor.on(event, handler);
+    if (actor.has(ViewportTrait) && !this.viewportSpaceOf(actor)) {
+      const view = this.viewSizeOf(actor);
+      const space2 = new Space(
+        `${ROOT_SPACE_ID}/${actor.id}`,
+        actor,
+        new Vector(view.x, view.y)
+      );
+      this.viewportSpaces.push(space2);
+      this.addCameraTo(space2, {
+        id: DEFAULT_CAMERA_ID,
+        traits: [...this.cameraTraitsOf(actor.type)]
+      });
     }
     const created = this.spatialEvent(SPATIAL.created);
     if (created) {
@@ -2069,6 +2769,10 @@ var World = class {
    * duplicates.
    */
   defineCamera(init) {
+    if (init.viewport !== void 0) {
+      this.defineSpaceCamera(init.viewport, init);
+      return this;
+    }
     if (!this.cameraList.some((camera) => camera.id === init.id)) {
       const camera = makeCamera({
         ...init,
@@ -2080,6 +2784,49 @@ var World = class {
     return this;
   }
   /**
+   * Add a camera to the space a Viewport owns.
+   *
+   * The id carries the space and the name does not: `win:wide` is the id, `wide`
+   * the name, so two Viewports may each have a `wide` and a list of every camera
+   * in the world still tells them apart (`Space.cameraNamed`).
+   *
+   * THROWS FOR ANYTHING THAT IS NOT A VIEWPORT, as `loadMapInto` does and for
+   * the same reason: a camera declared of a Panel can never look at anything,
+   * and holding the declaration in silence — which an earlier version of this
+   * did, forever — is the failure this lab keeps meeting. The place to declare a
+   * Viewport's camera is that Viewport's own `on create`, where it exists
+   * (specs/SPACE_CAMERAS_PLAN.md).
+   */
+  defineSpaceCamera(owner, init) {
+    const space = typeof owner === "string" ? this.viewportSpaces.find((one2) => one2.owner?.id === owner) : this.viewportSpaceOf(owner);
+    if (!space) {
+      const named = typeof owner === "string" ? owner : owner?.id;
+      throw new Error(
+        `world-lab: a camera cannot be defined for \u201C${named}\u201D, which is not a Viewport in this world`
+      );
+    }
+    this.addCameraTo(space, init);
+  }
+  /** Put one declared camera into a space, unless it already has that name. */
+  addCameraTo(space, init) {
+    if (space.cameraNamed(init.name ?? init.id)) {
+      return;
+    }
+    const view = space.owner ? this.viewSizeOf(space.owner) : this.view;
+    const camera = makeCamera({
+      ...init,
+      id: `${space.owner?.id ?? space.id}:${init.id}`,
+      name: init.name ?? init.id,
+      // The middle of the space's OWN window, as its main camera starts, and
+      // for the same reason the world's rest in the middle of the world's view.
+      position: init.position ?? new Vector(view.x / 2, view.y / 2)
+    });
+    camera.space = space.mirrorOf ?? space;
+    camera.window = space.owner;
+    camera.world = this;
+    space.cameras.push(camera);
+  }
+  /**
    * Take the view through a different camera.
    *
    * A VALUE, not structure: switching cameras moves a transform and rebuilds
@@ -2089,6 +2836,17 @@ var World = class {
   setActiveCamera(id) {
     if (this.cameraList.some((camera) => camera.id === id)) {
       this.activeCameraId = id;
+      return this;
+    }
+    for (const space of this.viewportSpaces) {
+      const found = space.cameras.find(
+        (camera) => camera.id === id || camera.id.endsWith(`:${id}`)
+      );
+      if (found && space.owner?.has(ViewportTrait)) {
+        space.owner.set(ViewportShowsThroughProperty, found.name);
+        space.activeCameraName = found.name;
+        return this;
+      }
     }
     return this;
   }
@@ -2097,7 +2855,19 @@ var World = class {
     return this.camera(this.activeCameraId);
   }
   camera(id = DEFAULT_CAMERA_ID) {
-    return this.cameraList.find((camera) => camera.id === id) ?? this.cameraList.find((entry) => entry.id === DEFAULT_CAMERA_ID) ?? this.cameraList[0];
+    const own = this.cameraList.find((camera) => camera.id === id);
+    if (own) {
+      return own;
+    }
+    for (const space of this.viewportSpaces) {
+      const found = space.cameras.find(
+        (camera) => camera.id === id || camera.id.endsWith(`:${id}`)
+      );
+      if (found) {
+        return found;
+      }
+    }
+    return this.cameraList.find((entry) => entry.id === DEFAULT_CAMERA_ID) ?? this.cameraList[0];
   }
   /**
    * Move a camera, in world pixels.
@@ -2137,7 +2907,11 @@ var World = class {
     return index === void 0 ? void 0 : this.layerList[index];
   }
   /** How deep a layer draws — its position in the stack. */
-  depthOf(layer) {
+  depthOf(layer, space) {
+    if (space && space !== this.rootSpace) {
+      const at = space.layers.findIndex((held2) => held2.id === layer);
+      return at < 0 ? 0 : at;
+    }
     return this.layerIndex.get(layer) ?? 0;
   }
   /**
@@ -2188,6 +2962,12 @@ var World = class {
     }
     actor.world = void 0;
     actor.layer = void 0;
+    const space = this.viewportSpaceOf(actor);
+    if (space) {
+      this.unloadSpace(space);
+      this.viewportSpaces.splice(this.viewportSpaces.indexOf(space), 1);
+    }
+    actor.space = void 0;
   }
   /**
    * The actors carried by `actor`, in placement order — asked here rather
@@ -2196,37 +2976,6 @@ var World = class {
    */
   childrenOf(actor) {
     return this.actorList.filter((candidate) => candidate.parent() === actor);
-  }
-  /**
-   * The actors placed under `name` — the id a map gave a placement, which a
-   * block may name (`the actor named ⟨…⟩`, specs/MAPS.md).
-   *
-   * BY THE NAME, NOT THE ID: a map loaded twice numbers its second Resume
-   * `Resume#2` (`resolveInstanceId`), and a handler about "Resume" means
-   * both. Usually one; a list because an actor value is one, and because
-   * nothing forbids two.
-   */
-  actorsNamed(name) {
-    return this.actorList.filter((actor) => nameOf(actor.id) === name);
-  }
-  /**
-   * Something a hat may register on, for the actor named `name`: the ones
-   * placed already, and every one placed later. What `any ⟨kind⟩` gets from
-   * a template's handlers, a name gets from here — a pause menu's Resume is
-   * not in the world when the world is described, and its hat must still
-   * find it.
-   */
-  named(name) {
-    return {
-      on: (event, handler) => {
-        const list = this.namedHandlers.get(name) ?? [];
-        list.push([event, handler]);
-        this.namedHandlers.set(name, list);
-        for (const actor of this.actorsNamed(name)) {
-          actor.on(event, handler);
-        }
-      }
-    };
   }
   /**
    * Stop the game moving, and keep it listening.
@@ -2306,7 +3055,7 @@ var World = class {
    * world where "near" has no meaning, which is not an error to raise at a
    * learner mid-game.
    */
-  actorsNear(at, radius, only) {
+  actorsNear(at, radius, only, sameSpaceAs) {
     const found = this.positional();
     if (!found) {
       return [];
@@ -2325,7 +3074,8 @@ var World = class {
       this.indexAt = this.elapsed;
       this.indexCount = this.actorList.length;
     }
-    const near = this.index.near(at?.x ?? 0, at?.y ?? 0, radius, positionOf);
+    const space = this.spaceOf(sameSpaceAs ?? this.inHand.at(-1));
+    const near = this.index.near(at?.x ?? 0, at?.y ?? 0, radius, positionOf).filter((actor) => actor.space === space);
     if (only?.type !== void 0) {
       return near.filter((actor) => actor.type === only.type);
     }
@@ -2355,33 +3105,68 @@ var World = class {
   actorCount() {
     return this.actorList.length;
   }
-  /** Raise an event for `actor`; dispatched after the current tick's steps. */
-  emit(event, actor, detail) {
-    this.events.enqueue(event, actor, detail);
-  }
   /**
-   * Whether `event` is already queued for `actor` — see `EventQueue.isPending`.
+   * Raise an event for `actor`; dispatched after the current tick's steps.
    *
-   * For a raiser that must not raise twice in one tick, and would otherwise
-   * have to keep a per-actor flag and clear it at some moment of its own.
+   * AS MANY VALUES AS THE EVENT'S SIGNATURE NAMES, in its order. One is the
+   * ordinary case and every rule in the library makes that call; a designed
+   * event may carry several, and a handler reads each by the name its author
+   * gave it (specs/EVENT_VALUES_PLAN.md).
    */
-  hasPendingEvent(event, actor) {
-    return this.events.isPending(event, actor);
+  emit(event, actor, ...values) {
+    this.events.enqueue(event, actor, ...values);
   }
   /**
    * Raise an event that is about the WORLD — a key went down, a level was
    * cleared — with no actor it happened to.
    *
    * A separate method rather than an optional argument, because the two say
-   * different things and `emit(event, detail)` would read as an actor with the
-   * detail in its place. Which of the two a rule uses is decided by where it
+   * different things and `emit(event, value)` would read as an actor with the
+   * value in its place. Which of the two a rule uses is decided by where it
    * declared the event: under a trait it is an actor's, on the rule it is the
    * world's.
    *
    * Dispatched with the actor ones, after this tick's steps.
    */
-  emitToWorld(event, detail) {
-    this.events.enqueue(event, void 0, detail);
+  emitToWorld(event, ...values) {
+    this.events.enqueue(event, void 0, ...values);
+  }
+  /**
+   * Register one of the world's own events under the name it reads by.
+   *
+   * WHY A REGISTRY AND NOT AN IMPORT. A map raises the world's events, and a
+   * map's module cannot import the world's: the world LOADS the map, so that
+   * is a cycle, and a `.map` is meant to be loadable by several worlds, so it
+   * cannot name one anyway (specs/MAP_EVENTS_PLAN.md).
+   *
+   * So the world says what it holds and the map names one — the third time a
+   * name arriving as DATA has needed this, beside `define` for actor kinds and
+   * `defineTheme` for themes. The preamble emits one call per declared event.
+   */
+  defineEvent(name, event) {
+    this.namedEvents.set(name, event);
+  }
+  namedEvents = /* @__PURE__ */ new Map();
+  /**
+   * Raise one of the world's events, by name.
+   *
+   * BY NAME, because a map cannot import the world that loads it: the world
+   * registers what it declares and the map says the word
+   * (specs/MAP_EVENTS_PLAN.md).
+   *
+   * A name that names nothing raises nothing and says so, which is the
+   * emptiest correct answer rather than a guard against anything reachable. A
+   * project has one world, and a map's `emit` is a block type that exists only
+   * because that world declared the event — so the name is always one the
+   * preamble registered. Nothing calls this with a name of its own invention.
+   */
+  emitNamed(name, ...values) {
+    const event = this.namedEvents.get(name);
+    if (!event) {
+      return false;
+    }
+    this.events.enqueue(event, void 0, ...values);
+    return true;
   }
   /**
    * Handle a world event. The counterpart of `Actor.on`, and the reason a world
@@ -2412,8 +3197,8 @@ var World = class {
    *
    * Safe to hand out directly: a Vector is immutable.
    */
-  mapBounds() {
-    return this.bounds;
+  mapBounds(actor) {
+    return this.spaceOf(actor ?? this.inHand.at(-1)).bounds;
   }
   /**
    * Somewhere in the map, picked at random — uniform over the whole rectangle.
@@ -2437,9 +3222,15 @@ var World = class {
    * The sum of every `delta` it has been ticked by, NOT a reading of the wall
    * clock. Three things follow, and all three are the point:
    *
-   * A world that is not ticking does not age. Pause the game and time stops
-   * with it, which is what a learner means by "two seconds later" — two seconds
-   * of game, not two seconds of sitting in a paused tab.
+   * A world that is not RUNNING does not age. A world nobody ticks does not,
+   * and neither does a paused one — `tick` leaves this alone while the game is
+   * paused, though it still runs the `sense` steps so the menu that paused it
+   * can be clicked. That is what a learner means by "two seconds later": two
+   * seconds of game, not two seconds of sitting in a menu.
+   *
+   * It is why `the time now` is a separate block. Everything measured in this
+   * — a cooldown, a lifetime, a delay — should wait while the game does, and
+   * the wall clock should not (specs/CLOCK_PLAN.md).
    *
    * It agrees exactly with anything integrated from `delta`. A bullet that has
    * traveled `speed × 2` has an age of exactly 2, because the same numbers
@@ -2461,8 +3252,383 @@ var World = class {
    * reads it the way it reads everything else about the world, and so making it
    * settable later changes nothing that asks.
    */
-  viewSize() {
-    return new Vector(this.view.x, this.view.y);
+  viewSize(actor) {
+    const subject = actor ?? this.inHand.at(-1);
+    if (subject instanceof Camera && subject.window) {
+      return this.viewSizeOf(subject.window);
+    }
+    const space = this.spaceOf(subject);
+    return space.owner ? this.viewSizeOf(space.owner) : new Vector(this.view.x, this.view.y);
+  }
+  /** How big a Viewport is on screen: its drawn size. */
+  viewSizeOf(viewport) {
+    const size = this.intrinsicSizeProperty();
+    const scale = this.scaleProperty();
+    const intrinsic = size ? viewport.get(size) : new Vector(0, 0);
+    const scaled = scale ? viewport.get(scale) : new Vector(1, 1);
+    return new Vector(
+      (intrinsic.x > 0 ? intrinsic.x : this.view.x) * Math.abs(scaled.x),
+      (intrinsic.y > 0 ? intrinsic.y : this.view.y) * Math.abs(scaled.y)
+    );
+  }
+  // ── Spaces (specs/VIEWPORT_PLAN.md) ──────────────────────────────────────
+  /** The space `subject` is in: an actor's own; a camera's is the root. */
+  spaceOf(subject) {
+    return subject && "space" in subject && subject.space ? subject.space : this.rootSpace;
+  }
+  /** The space a Viewport owns, or nothing for an actor that is not one. */
+  viewportSpaceOf(actor) {
+    return this.viewportSpaces.find((space) => space.owner === actor);
+  }
+  /** Every space a Viewport owns, in the order the Viewports were placed. */
+  get spaces() {
+    return this.viewportSpaces;
+  }
+  /**
+   * Take `subject` in hand for the length of `fn` — see the field. Nested,
+   * so a loop inside a handler is at its own actor and the handler is back
+   * at its subject after.
+   */
+  withActor(subject, fn) {
+    this.inHand.push(subject);
+    try {
+      return fn();
+    } finally {
+      this.inHand.pop();
+    }
+  }
+  /** The two halves of `withActor`, for a generated loop's body. */
+  enter(subject) {
+    this.inHand.push(subject);
+  }
+  leave() {
+    this.inHand.pop();
+  }
+  /** The actor in hand, if any — for what asks after it by name. */
+  actorInHand() {
+    return this.inHand.at(-1);
+  }
+  /**
+   * Register a map under its module path, so it can be loaded by a path
+   * held in a property — a Viewport's `map`. The world module registers
+   * every map the project holds (specs/VIEWPORT_PLAN.md).
+   */
+  defineMap(path, map) {
+    this.maps.set(path, map);
+  }
+  /** A registered map, by path. */
+  mapNamed(path) {
+    return this.maps.get(path);
+  }
+  /**
+   * Replace what `viewport` holds with `map` — by value, or by the path a
+   * property holds. What it held is unloaded first, so a Viewport shows one
+   * map at a time; the space's bounds start over at the map's size, and its
+   * camera at the middle of the window it is seen through.
+   */
+  loadMapInto(viewport, map, layer) {
+    const space = this.viewportSpaceOf(viewport);
+    if (!space) {
+      throw new Error(
+        `world-lab: \u201C${viewport.id}\u201D is not a Viewport, so nothing can be loaded into it`
+      );
+    }
+    this.stopMirroring(space);
+    this.unloadSpace(space);
+    const held2 = typeof map === "string" ? this.maps.get(map) : map;
+    if (typeof map === "string") {
+      this.nowShows(viewport, space, map);
+    }
+    space.layers = layersOfMap(held2?.layers);
+    if (!held2) {
+      return [];
+    }
+    const view = this.viewSizeOf(viewport);
+    space.bounds = new Vector(view.x, view.y);
+    space.camera.position = new Vector(view.x / 2, view.y / 2);
+    const added = this.loadInto(space, held2, layer);
+    this.settleSpace(space);
+    if (viewport.has(ViewportTrait)) {
+      this.emit(
+        ViewportShowsMapEvent,
+        viewport,
+        typeof map === "string" ? map : space.shown ?? ""
+      );
+    }
+    return added;
+  }
+  /** Take back everything loaded into `viewport`. */
+  unloadViewport(viewport) {
+    const space = this.viewportSpaceOf(viewport);
+    if (space) {
+      this.stopMirroring(space);
+      this.unloadSpace(space);
+      this.nowShows(viewport, space, "");
+    }
+  }
+  /**
+   * Record the path a Viewport shows, in the space AND in the Viewport's
+   * `map` property. Both, because `showHeldMap` loads whatever the property
+   * names whenever that differs from what is shown: a load by path that left
+   * the property naming the old map was undone on the next tick, by the
+   * engine loading the old map back. With the property written, it is also
+   * what a block reading it and the inspector are told, and setting it back
+   * to an earlier path is a change again.
+   */
+  nowShows(viewport, space, path) {
+    space.shown = path;
+    if (viewport.has(ViewportTrait) && String(viewport.get(ViewportMapProperty) ?? "") !== path) {
+      viewport.set(ViewportMapProperty, path);
+    }
+  }
+  unloadSpace(space) {
+    for (const load of space.loads.splice(0)) {
+      load.unload();
+    }
+  }
+  /**
+   * Keep each Viewport's camera on what it follows and inside what it
+   * shows — what the camera rules do for the world's camera, done here for
+   * a camera no block can elect a trait on. Run at the end of every tick.
+   */
+  settleSpaces() {
+    for (const space of this.viewportSpaces) {
+      this.showHeldMap(space);
+      if (space.mirrorOf) {
+        space.bounds = space.mirrorOf.bounds;
+      }
+      this.showsThrough(space);
+      this.settleSpace(space);
+    }
+  }
+  /**
+   * Copy a Viewport's camera-trait property values onto its main camera.
+   *
+   * The values live on the ACTOR — that is what makes `actor to follow` a
+   * field in the placement inspector and a `set` on the Viewport — and the
+   * camera rules read them off the camera. One direction, once a tick and
+   * BEFORE the steps run (`tick`), for the traits the kind elected directly: a
+   * dependency's properties (`Aimed`'s goal) are the camera's own working state
+   * and copying the actor's stale copy over them would undo the aim every
+   * frame.
+   */
+  lendCameraProperties(space) {
+    const owner = space.owner;
+    const main = space.cameras[0];
+    if (!owner || !main) {
+      return;
+    }
+    for (const trait of this.cameraTraitsOf(owner.type)) {
+      for (const property of Object.values(trait.properties)) {
+        main.set(property, owner.get(property));
+      }
+    }
+  }
+  /**
+   * The camera traits a kind elected.
+   *
+   * From what `useActorKind` recorded, else from the template `define`
+   * registered under the type: `addActor` given an INSTANCE rather than a
+   * template goes straight to `place` and records nothing about its kind,
+   * and a Viewport placed that way still has a camera to give the traits to.
+   */
+  cameraTraitsOf(type) {
+    return this.kindCameraTraits.get(type) ?? this.types.get(type)?.cameraTraits ?? [];
+  }
+  /**
+   * Keep the space's active camera in step with what its Viewport says.
+   *
+   * Beside `showHeldMap`, and for the same reason it is there: a Viewport's
+   * properties are how a project talks to its space, and a change to one is
+   * noticed once a tick rather than hooked on the write. So cutting to another
+   * camera is an ordinary `set` — `set shows through of ⟨the Minimap⟩ to
+   * ⟨"chase"⟩` — with nothing to invent and nothing to remember to call.
+   *
+   * Empty is the space's main camera, which is what a Viewport that has never
+   * heard of cameras says (`ViewportShowsThroughProperty`).
+   */
+  showsThrough(space) {
+    const owner = space.owner;
+    if (!owner?.has(ViewportTrait)) {
+      return;
+    }
+    const named = String(owner.get(ViewportShowsThroughProperty) ?? "");
+    space.activeCameraName = named || DEFAULT_CAMERA_ID;
+  }
+  /**
+   * Load the map a Viewport's `map` property names, when it is not the one
+   * shown: at the first tick after the Viewport is placed, and again
+   * whenever the property changes (`rules/viewport`). A path nothing
+   * registered shows nothing, as `loadMapInto` says.
+   */
+  showHeldMap(space) {
+    const owner = space.owner;
+    if (!owner || !owner.has(ViewportTrait)) {
+      return;
+    }
+    const target = this.mirrorTargetOf(owner);
+    if (target) {
+      if (space.mirrorOf !== target) {
+        this.mirrorInto(space, target);
+      }
+      return;
+    }
+    if (space.mirrors) {
+      this.stopMirroring(space);
+      space.shown = void 0;
+    }
+    const path = String(owner.get(ViewportMapProperty) ?? "");
+    if (path === (space.shown ?? "")) {
+      return;
+    }
+    space.shown = path;
+    this.loadMapInto(owner, path);
+  }
+  /**
+   * The space a Viewport says it shows instead of its own, if it says one.
+   *
+   * `mirrors` — another Viewport — before `mirrors the world`, on the grounds
+   * that the more specific thing was said on purpose. A mirror of a mirror
+   * shows what the END of the chain shows, and a chain that comes back to
+   * itself shows nothing: a Viewport cannot show a scene whose definition is
+   * "whatever this Viewport shows". Nothing rather than the root, because the
+   * root is an answer and this question has none.
+   */
+  mirrorTargetOf(viewport) {
+    const seen = /* @__PURE__ */ new Set();
+    let at = viewport;
+    while (at && !seen.has(at)) {
+      seen.add(at);
+      if (!at.has(ViewportTrait)) {
+        return void 0;
+      }
+      const named = at.get(ViewportMirrorsProperty)[0];
+      if (named) {
+        at = named;
+        continue;
+      }
+      if (at.get(ViewportMirrorsTheWorldProperty) === true) {
+        return this.rootSpace;
+      }
+      return at === viewport ? void 0 : this.viewportSpaceOf(at);
+    }
+    return void 0;
+  }
+  /**
+   * Bind a Viewport to another scene (specs/MIRRORING_PLAN.md).
+   *
+   * What it held goes, since a Viewport shows one thing at a time; its
+   * cameras are pointed at the target, so a query with one in hand answers
+   * about the scene it shows; and its bounds become the target's, kept in step
+   * each tick, so a camera confined to the map is confined to the target's.
+   */
+  mirrorInto(space, target) {
+    this.unloadSpace(space);
+    space.mirrorOf = target;
+    space.bounds = target.bounds;
+    for (const camera of space.cameras) {
+      camera.space = target;
+    }
+  }
+  /** The other way: a Viewport that mirrored is about to show a map of its own. */
+  stopMirroring(space) {
+    if (!space.mirrors) {
+      return;
+    }
+    space.mirrorOf = void 0;
+    for (const camera of space.cameras) {
+      camera.space = space;
+    }
+  }
+  /**
+   * Put a space's camera where the Viewport scrolled it, and say where it is.
+   *
+   * WHAT THIS NO LONGER DOES is follow an actor. The map's `camera.follows` is
+   * gone, and with it the second implementation of following: where the view
+   * looks is logic, a map is data, and a hundred level maps should no more each
+   * configure a camera than each mint a `complete`
+   * (specs/SPACE_CAMERAS_PLAN.md, specs/MAP_EVENTS_PLAN.md). A Viewport's
+   * camera follows by electing `Follows`, as the world's always has.
+   *
+   * A CAMERA THAT ELECTS ANYTHING IS THE RULES' TO AIM, and this leaves it
+   * alone — otherwise the camera steps would aim it during the frame and this
+   * would overwrite them at the end of it, which is exactly what the branch
+   * above did. A camera that elects NOTHING is still the Viewport's to scroll,
+   * because a scroll view is the Viewport deciding about the scene it shows and
+   * not a map deciding about itself (specs/SCROLLING_PLAN.md).
+   *
+   * Confinement goes the same way: the scroll path clamps, because `scroll`
+   * promises a reading of where it actually stopped, and a camera with traits is
+   * confined by `Confined to the Map` or by nothing at all — which is how the
+   * world's cameras have always behaved.
+   */
+  settleSpace(space) {
+    const camera = space.camera;
+    if (!camera || !space.owner) {
+      return;
+    }
+    const owner = space.owner;
+    const view = this.viewSizeOf(owner);
+    if (!camera.traits().length && owner.has(ViewportTrait)) {
+      const scrolled = owner.get(ViewportScrollProperty);
+      const at = new Vector(scrolled.x + view.x / 2, scrolled.y + view.y / 2);
+      const clamp = (value, half, size) => size <= half * 2 ? size / 2 : Math.min(Math.max(value, half), size - half);
+      camera.position = new Vector(
+        clamp(at.x, view.x / 2, space.bounds.x),
+        clamp(at.y, view.y / 2, space.bounds.y)
+      );
+    }
+    if (owner.has(ViewportTrait)) {
+      const settled = new Vector(
+        camera.position.x - view.x / 2,
+        camera.position.y - view.y / 2
+      );
+      const was = owner.get(ViewportScrollProperty);
+      if (was.x !== settled.x || was.y !== settled.y) {
+        owner.set(ViewportScrollProperty, settled);
+      }
+      const bounds = owner.get(ViewportContentProperty);
+      if (bounds.x !== space.bounds.x || bounds.y !== space.bounds.y) {
+        owner.set(ViewportContentProperty, space.bounds);
+      }
+    }
+  }
+  /**
+   * Every Viewport's space, for the driver: whose it is, where its camera
+   * looks, how much of it is shown, and how big it is.
+   */
+  spaceSnapshot() {
+    return this.viewportSpaces.flatMap((space) => {
+      if (!space.owner || !space.camera) {
+        return [];
+      }
+      const view = this.viewSizeOf(space.owner);
+      return [
+        {
+          id: space.id,
+          owner: space.owner.id,
+          // The space whose scene the box shows instead of its own, by id —
+          // the root's, or another Viewport's — which the driver draws through
+          // that space's display list (specs/MIRRORING_PLAN.md).
+          mirrors: space.mirrorOf?.id,
+          mirrorsRoot: space.mirrorOf === this.rootSpace,
+          camera: { x: space.camera.position.x, y: space.camera.position.y },
+          view: { x: view.x, y: view.y },
+          bounds: { x: space.bounds.x, y: space.bounds.y },
+          // A mirror has no layers of its own to draw: what it shows is the
+          // target's scene, layers and all, through the target's containers.
+          // Reporting the target's here would have the driver build a second
+          // set of backdrops inside the box (specs/MIRRORING_PLAN.md).
+          layers: (space.mirrorOf ? [] : space.layers).map((layer) => ({
+            id: layer.id,
+            parallax: { x: layer.parallax.x, y: layer.parallax.y },
+            fit: layer.fit,
+            background: layer.background,
+            foreground: layer.foreground
+          }))
+        }
+      ];
+    });
   }
   /**
    * Say how much of the world is on screen at once, in TILES.
@@ -2494,7 +3660,58 @@ var World = class {
         camera.position = middle;
       }
     }
+    this.reanchor();
   }
+  /**
+   * Place every anchored placement again, against the window as it is now.
+   *
+   * ANCHORS WERE MEASURED ONCE, AT LOAD, and a world's main map is loaded
+   * between its prologue and its rows so that a row can name what the map
+   * placed (specs/MAP_BEFORE_ROWS_PLAN.md). So `set view size` in a world's
+   * body runs AFTER the load: the placements had already been fitted to the
+   * default window and were never fitted again. Notes met it — NEW NOTE is
+   * anchored to the bottom of a 320x576 map, was placed against the default
+   * 320x320 window at y=264, and stayed there when the body made the window
+   * 576 tall, which is the middle of it.
+   *
+   * ONE THAT HAS BEEN MOVED IS LEFT WHERE IT WAS PUT, which is the rule the
+   * cameras above already follow through a resize. A placement a program has
+   * dragged somewhere is somewhere for a reason, and shifting it back would
+   * undo the program.
+   *
+   * Only the placements in a space the WORLD's window sizes. A Viewport's
+   * space is sized by the Viewport (`viewSizeOf`), and nothing here changed
+   * that.
+   */
+  reanchor() {
+    const property = this.positionalProperty(SPATIAL.position);
+    if (!property) {
+      return;
+    }
+    const view = this.viewSize();
+    for (const actor of this.actorList) {
+      const hold = this.anchorHolds.get(actor);
+      if (!hold || hold.space.owner || actor.parent()) {
+        continue;
+      }
+      const at = actor.get(property);
+      if (at.x !== hold.put.x || at.y !== hold.put.y) {
+        continue;
+      }
+      const put = anchored(hold.at, hold.anchor, hold.drawn, view);
+      actor.set(property, put);
+      hold.put = put;
+    }
+  }
+  /**
+   * What it would take to place an anchored placement again.
+   *
+   * A WeakMap rather than a list to prune: a dialog loads and unloads over and
+   * over, and a strong reference to every placement one ever made would be a
+   * leak that grew with the session. What is iterated is the world's own actor
+   * list, which is already the set of actors that exist.
+   */
+  anchorHolds = /* @__PURE__ */ new WeakMap();
   /**
    * Say how big the world is, in TILES.
    *
@@ -2531,33 +3748,122 @@ var World = class {
    * thing that knows a map was loaded.
    */
   growToFit(map) {
+    this.growSpaceToFit(this.rootSpace, map);
+  }
+  /**
+   * Move each anchored placement to where it belongs in this window.
+   *
+   * WHAT IS MEASURED is how far the placement sits from its anchor's point in
+   * the MAP; what is applied is that same distance from the anchor's point in
+   * the VIEW. A learner drags a thing into the corner and says which corner;
+   * nobody types an offset (specs/ANCHORS_PLAN.md).
+   *
+   * A map with no size anchors nothing: there is nothing to measure against,
+   * and a synthesised map — one a `map` block builds out of blocks — has
+   * none.
+   *
+   * A CHILD IS LEFT ALONE. A parented placement's position is its local one,
+   * measured from its parent rather than from the map, so an anchor on one
+   * would move it by the distance between two things it is not between. The
+   * parent's anchor carries the child, which is what parenting is for.
+   */
+  applyAnchors(space, map, anchoring) {
+    if (anchoring.length === 0 || !map.size || !map.tile) {
+      return;
+    }
+    const property = this.positionalProperty(SPATIAL.position);
+    if (!property) {
+      return;
+    }
+    const drawn = new Vector(
+      map.size.width * map.tile.width,
+      map.size.height * map.tile.height
+    );
+    const view = space.owner ? this.viewSize(space.owner) : this.viewSize();
+    for (const [actor, anchor] of anchoring) {
+      if (actor.parent()) {
+        continue;
+      }
+      const at = actor.get(property);
+      const put = anchored(at, anchor, drawn, view);
+      actor.set(property, put);
+      this.anchorHolds.set(actor, { space, anchor, at, drawn, put });
+    }
+  }
+  growSpaceToFit(space, map) {
     if (!map.size || !map.tile) {
       return;
     }
-    this.bounds = new Vector(
-      Math.max(this.bounds.x, map.size.width * map.tile.width),
-      Math.max(this.bounds.y, map.size.height * map.tile.height)
+    space.bounds = new Vector(
+      Math.max(space.bounds.x, map.size.width * map.tile.width),
+      Math.max(space.bounds.y, map.size.height * map.tile.height)
     );
   }
   /**
    * Place the actors a Map describes.
    *
-   * A world may load several — a level and a HUD, say. Loading is additive, so
-   * they stack in call order; `clearActors()` first to replace rather than add.
+   * A world may load several — a HUD, a menu over a game. Loading is additive,
+   * so they stack in call order, and each load can be taken back by the
+   * handle its script is given (`MapLoad.unload`). REPLACING a level is not
+   * this: a level is what a Viewport holds, and `loadMapInto` replaces it.
    *
-   * IT WORKS WHILE THE GAME RUNS, which is what makes a second room possible:
-   * `clear world` then `load map ⟨Room 2⟩` in a handler is a door. It lived on
-   * `WorldBuilder` alone until then, and a project could describe as many maps
-   * as it liked so long as it never wanted to be in a different one.
+   * IT WORKS WHILE THE GAME RUNS, which is what lets a menu come up in a
+   * handler. It lived on `WorldBuilder` alone until that was wanted.
    *
    * `layer` puts every actor the map describes into one layer, which is what
    * makes a HUD a HUD: the map is an ordinary map, and the layer it is loaded
    * into is the whole of what makes it an interface (specs/VIEWPORT.md).
    */
   loadMap(map, layer) {
-    this.growToFit(map);
+    const added = this.loadInto(this.rootSpace, map, layer);
+    for (const actor of added) {
+      const space = actor.has(ViewportTrait) ? this.viewportSpaceOf(actor) : void 0;
+      if (space) {
+        this.showHeldMap(space);
+      }
+    }
+    return added;
+  }
+  /**
+   * Load a map the project holds, BY PATH — `load the map named ⟨…⟩`.
+   *
+   * The counterpart of `loadMap`, which takes the map itself and so can only
+   * name one a file imported. A path can be worked out: which screen to go
+   * to, which level is next. Every map a project holds is registered here
+   * whether or not anything imports it, for the reason a Viewport needs
+   * (`defineMap`), so a path is enough.
+   *
+   * A path nothing registered loads nothing, which is what the path says.
+   */
+  loadMapNamed(path, layer) {
+    const held2 = this.maps.get(path);
+    return held2 ? this.loadMap(held2, layer) : [];
+  }
+  /**
+   * Close the newest map the world itself holds, and say whether there was
+   * one — `unload the newest map`, and the whole of what "back" is.
+   *
+   * THE WORLD'S OWN SPACE, not a Viewport's: a Viewport shows one map and
+   * swapping it is `load map ⟨…⟩ into ⟨…⟩`, which has its own block and its
+   * own meaning. This is the stack a screen sits on
+   * (specs/SCREENS_PLAN.md).
+   *
+   * The map a world was BUILT from is a load like any other, so a project
+   * that goes back often enough closes its own first screen and is left with
+   * nothing. That is what it asked for; a rule that keeps a floor under it is
+   * the rule's business, and `Screens` keeps one.
+   */
+  unloadNewestMap() {
+    const load = this.rootSpace.loads.at(-1);
+    load?.unload();
+    return load !== void 0;
+  }
+  /** Place a map's actors into `space` — `loadMap`'s body, for any space. */
+  loadInto(space, map, layer) {
+    this.growSpaceToFit(space, map);
     const lookup = this.propertyLookup();
     const added = [];
+    const anchoring = [];
     const placed = /* @__PURE__ */ new Map();
     const deferred = [];
     for (const entry of map.actors) {
@@ -2596,7 +3902,10 @@ var World = class {
         }
       }
       this.useActorKind(entry.type, builder);
-      this.addActor(actor, layer);
+      this.place(actor, entry.layer ?? layer, space);
+      if (isAnchor(entry.anchor)) {
+        anchoring.push([actor, entry.anchor]);
+      }
       added.push(actor);
     }
     for (const [actor, property, id] of deferred) {
@@ -2615,17 +3924,32 @@ var World = class {
       }
       actor.set(property, target);
     }
+    this.applyAnchors(space, map, anchoring);
+    const load = new MapLoad(
+      this,
+      added,
+      space.loads,
+      map.modal === true,
+      typeof map.theme === "string" ? map.theme : ""
+    );
+    space.loads.push(load);
+    for (const actor of added) {
+      this.loadOf.set(actor, load);
+    }
+    if (typeof map.script === "function") {
+      map.script(this, Object.fromEntries(placed), load);
+    }
     return added;
   }
   /** Map `${ownerId}.${propId}` -> Property across the world's rules + traits. */
   propertyLookup() {
     const lookup = /* @__PURE__ */ new Map();
     const add = (property) => lookup.set(`${property.ownerId}.${property.id}`, property);
-    for (const rule3 of this.activeRules()) {
-      for (const property of Object.values(rule3.properties)) {
+    for (const rule6 of this.activeRules()) {
+      for (const property of Object.values(rule6.properties)) {
         add(property);
       }
-      for (const trait of Object.values(rule3.traits)) {
+      for (const trait of Object.values(rule6.traits)) {
         for (const property of Object.values(trait.properties)) {
           add(property);
         }
@@ -2646,7 +3970,8 @@ var World = class {
   }
   /** Replace the pressed-key set (driver calls this each frame before `tick`). */
   setInput(keys2) {
-    this.keys = new Set(keys2);
+    this.held = new Set(keys2);
+    this.keys = this.held;
   }
   /**
    * Add to what was typed this frame — the driver calls this per keystroke.
@@ -2657,6 +3982,32 @@ var World = class {
    */
   addTyped(characters) {
     this.typed.push(...characters);
+  }
+  /**
+   * Type as if the player had — `type ⟨"a"⟩`.
+   *
+   * READ NEXT FRAME, not this one, and the lag is honest rather than a
+   * compromise: this is called from a handler, a handler runs after the step
+   * that reads what was typed, and a click IS a frame late. See `pendingTyped`
+   * and specs/KEYBOARD_PLAN.md.
+   *
+   * Nothing hears this as "the world typed" — it arrives exactly where the
+   * keyboard's characters arrive, so a Text Input, a Text Area and a project's
+   * own `types ⟨character⟩` handler all work with no change at all. That is the
+   * whole reason an on-screen keyboard types instead of reaching into a field.
+   */
+  type(characters) {
+    this.pendingTyped.push(...characters);
+  }
+  /**
+   * Press and release a key as if the player had — `press the ⟨backspace⟩ key`.
+   *
+   * The counterpart to `type` for the keys that make no character: backspace,
+   * delete and enter are edits and commands, and a field handles them as
+   * `presses ⟨key⟩` (`actors/textInput`). Down for one frame, up the next.
+   */
+  pressKey(key) {
+    this.pendingKeys.add(key);
   }
   /** What was typed since the last tick, in order. */
   typedCharacters() {
@@ -2684,6 +4035,29 @@ var World = class {
   capturedKeys() {
     return this.captured;
   }
+  /**
+   * Say whether the game is using the wheel — the same bargain as a key.
+   *
+   * A CANVAS THAT SWALLOWED EVERY WHEEL would trap the page's own scroll under
+   * a game that has nothing to scroll, and one that swallowed none would
+   * scroll the page out from under a list somebody is reading. Neither is a
+   * constant the driver could know, so the world says: the Mouse rule sets
+   * this each frame from whether anything scrollable is under the pointer
+   * (`rules/mouse`), and the driver reads it in its listener.
+   *
+   * A FRAME BEHIND, which is the whole of what it costs. The pointer has to
+   * have arrived over the list before the first notch, and it has — moving
+   * there is frames of pointer events. A wheel turned in the same instant the
+   * pointer lands scrolls the page once.
+   */
+  useWheel(wanted) {
+    this.wheelWanted = wanted;
+  }
+  /** Whether anything under the pointer asked for the wheel. */
+  wantsWheel() {
+    return this.wheelWanted;
+  }
+  wheelWanted = false;
   /** The game window took the keyboard (the driver calls this on focus). */
   gainedKeyboard() {
     this.keyboardArrived = true;
@@ -2702,6 +4076,361 @@ var World = class {
     this.measure = measure;
   }
   /**
+   * Lend the world somewhere to remember things — see `save`, `recall` and
+   * `forget` below (specs/SAVING_PLAN.md).
+   *
+   * LENT, NOT REACHED FOR, exactly as the measuring tape above is. The engine
+   * knows nothing about browsers; a world with no storage behind it — the
+   * headless check runner, every test that does not ask for one — remembers
+   * nothing and loses nothing, which is what it should do rather than throw.
+   */
+  useStorage(storage) {
+    this.storage = storage;
+  }
+  storage;
+  /**
+   * Which PROJECT this is, for filing what it remembers under.
+   *
+   * LENT, like the storage and the clock, and for the same reason: a project
+   * is a thing the lab knows about and this half does not. The driver hands
+   * over the channel the project lives at (`/projects/world/<channel>/edit`).
+   *
+   * A world lent none files under a slot shared with every other project on
+   * the browser, which is what the whole lab did before this and is what
+   * every headless test still does.
+   */
+  useChannel(channel) {
+    this.channel = channel;
+  }
+  channel = "";
+  /**
+   * Lend the world the theme its interface is painted in.
+   *
+   * LENT, like the storage, the clock and the channel — and read the same way,
+   * by whoever draws. A `.style` file is JSON the bundler loads, so this takes
+   * the document and resolves it ONCE: `styleNamed` is then a map lookup,
+   * which matters because a drawing asks for one per shape per actor per
+   * frame (specs/STYLES_PLAN.md).
+   *
+   * A world lent none draws in whatever its routines set for themselves, which
+   * is what every world did before this and what every headless test does.
+   */
+  /**
+   * Register a theme by path, before anything names one.
+   *
+   * WHY THE WORLD IS HANDED THE LOT. Only one of the three ways a theme is
+   * chosen is a path an import could follow: the world's own `use theme` row.
+   * A map's is a string in its document, a placement's is a string in a
+   * property, and a file's `extends` is a fourth — none of which a bundler
+   * can see. So the preamble imports every `.style` the project holds and
+   * says so here, exactly as it does for actor kinds and maps
+   * (specs/STYLES_PLAN.md).
+   */
+  defineTheme(path, document) {
+    this.themeDocuments.set(path, document);
+    this.themeCache.delete(path);
+  }
+  themeDocuments = /* @__PURE__ */ new Map();
+  /**
+   * Name the world's own theme — the base of the cascade.
+   *
+   * TAKES A PATH OR A DOCUMENT. The block passes the imported document, which
+   * is what a bundler gives it; a test passes one in hand. Either way the
+   * lookup below is what answers `extends`, a map's theme and a placement's.
+   */
+  useTheme(document, parentAt = (path) => this.themeDocuments.get(path)) {
+    this.findTheme = parentAt;
+    this.themeCache = /* @__PURE__ */ new Map();
+    this.baseTheme = resolveTheme(
+      typeof document === "string" ? parentAt(document) : document,
+      parentAt
+    );
+  }
+  baseTheme = NO_THEME;
+  /**
+   * How to find a theme by path — the same function `useTheme` resolved the
+   * base with, kept because the OTHER two levels are found at draw time: a
+   * map names its theme in its own document, and a placement in a property,
+   * and neither is known when the world is built.
+   */
+  findTheme;
+  /**
+   * Resolved themes by path.
+   *
+   * A CACHE BECAUSE A DRAWING ASKS PER SHAPE PER ACTOR PER FRAME. Resolving a
+   * theme walks its parent and every class in both, which is fine once and
+   * absurd sixty times a second. Cleared whenever the base changes, which is
+   * the only time a file can have been reloaded.
+   */
+  themeCache = /* @__PURE__ */ new Map();
+  /** The world's own theme — the base of the cascade. */
+  currentTheme() {
+    return this.baseTheme;
+  }
+  /** One theme by path, resolved once and kept. */
+  themeAt(path) {
+    if (!path || !this.findTheme) {
+      return void 0;
+    }
+    const known = this.themeCache.get(path);
+    if (known) {
+      return known;
+    }
+    const found = this.findTheme(path);
+    if (found === void 0) {
+      return void 0;
+    }
+    const resolved = resolveTheme(found, this.findTheme, [path]);
+    this.themeCache.set(path, resolved);
+    return resolved;
+  }
+  /**
+   * The theme an ACTOR is painted out of: its own, else its map's, else the
+   * world's.
+   *
+   * THREE LEVELS AND NO MORE. The actor's own is a property a placement sets
+   * in the inspector; the map's is a field on the map document; the world's
+   * is the `use theme` row. Each is a whole FILE rather than a class, which
+   * is what keeps the drawings out of it — a drawing names a class and never
+   * learns which file answered (specs/STYLES_PLAN.md).
+   *
+   * `loadOf` is what makes the middle one possible, and it was already there:
+   * the world keeps which load placed each actor so `canReach` can ask
+   * (specs/MODALITY_PLAN.md).
+   */
+  themeFor(actor) {
+    const property = this.styleThemeProperty();
+    const own = property && actor.hasProperty(property) ? actor.get(property) : "";
+    return (typeof own === "string" ? this.themeAt(own) : void 0) ?? this.themeAt(this.loadOf.get(actor)?.theme ?? "") ?? this.baseTheme;
+  }
+  /** One class, for this actor, or nothing — what `use style` generates. */
+  styleFor(actor, name) {
+    return this.themeFor(actor).styles.get(name);
+  }
+  /**
+   * One style by name, or nothing.
+   *
+   * NOTHING RATHER THAN A DEFAULT. The pen leaves itself alone when handed
+   * nothing (`CommandPen.useStyle`), so a drawing naming a style the theme
+   * lacks paints in whatever came before rather than vanishing — and the name
+   * is worth reporting, not worth guessing at.
+   */
+  styleNamed(name) {
+    return this.baseTheme.styles.get(name);
+  }
+  /**
+   * The key a name is stored under.
+   *
+   * THE PROJECT IS IN IT, and that is not a nicety. Storage belongs to an
+   * ORIGIN, and every project in the lab runs on the same sandbox origin —
+   * so a key of the name alone means every published app that keeps a
+   * `score` reads and writes the same slot as every other. Tolerable while a
+   * learner has one project; a bug the moment anybody shares one, which is
+   * the point of saving at all (specs/RECORDS_PLAN.md).
+   */
+  memoryKey(name) {
+    return this.channel ? `world-lab.memory.${this.channel}.${name}` : `world-lab.memory.${name}`;
+  }
+  /**
+   * Write every property this world declared for itself, under `name`.
+   *
+   * THE WORLD'S OWN MEMORY and nothing else. What a saved GAME is — which
+   * actors are alive and where — wants a vocabulary for identity across runs
+   * that nothing here has; an app's data is not that, and this is an app's
+   * data (specs/SAVING_PLAN.md).
+   *
+   * Answers whether it was written, which is false when nothing lent this
+   * world a storage and false when the storage refused — a browser with its
+   * site data blocked is a real thing and not a crash.
+   */
+  save(name) {
+    if (!this.storage) {
+      return false;
+    }
+    const written = {};
+    for (const property of this.ownProperties) {
+      written[`${property.ownerId}.${property.id}`] = this.store.get(property);
+    }
+    try {
+      this.storage.setItem(this.memoryKey(name), JSON.stringify(written));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  /**
+   * Read a memory back, and say whether there was one.
+   *
+   * A project asks the answer to tell a first run from a later one, which is
+   * the whole of what an app's start screen needs.
+   *
+   * A PROPERTY THE DATA DOES NOT MENTION KEEPS WHAT IT HAS. A project that
+   * adds a property after saving should not find its other values wiped, and
+   * what an unmentioned property holds is already its default. A property the
+   * world no longer DECLARES is ignored: saved data outlives edits, and a
+   * value nothing can hold is not worth taking a project down for.
+   */
+  recall(name) {
+    if (!this.storage) {
+      return false;
+    }
+    let raw = null;
+    try {
+      raw = this.storage.getItem(this.memoryKey(name));
+    } catch {
+      return false;
+    }
+    if (raw === null) {
+      return false;
+    }
+    let read;
+    try {
+      read = JSON.parse(raw);
+    } catch {
+      return false;
+    }
+    if (!read || typeof read !== "object") {
+      return false;
+    }
+    const held2 = read;
+    for (const property of this.ownProperties) {
+      const key = `${property.ownerId}.${property.id}`;
+      if (key in held2) {
+        this.set(property, held2[key]);
+      }
+    }
+    return true;
+  }
+  /**
+   * Keep these actors — `remember ⟨…⟩ as ⟨"notes"⟩`.
+   *
+   * A RECORD IS AN ACTOR. It has named typed fields, an inspector that edits
+   * them, blocks that read them and a picture; a second thing with named
+   * fields beside it would be a second way to say what the lab already says
+   * (specs/RECORDS_PLAN.md). So what was missing was never a way to describe
+   * a record — only a way to keep one.
+   *
+   * IT TAKES THE ACTORS, not a kind. `any ⟨Note⟩` is the ordinary way to say
+   * "all of them", and taking a value rather than a dropdown means a project
+   * can keep a SUBSET with the block it already filters by:
+   *
+   *     remember ⟨the ⟨Note⟩s where ⟨done⟩ is false⟩ as ⟨"todo"⟩
+   *
+   * …and a mixed set, since each row carries the kind it came from.
+   *
+   * ITS OWN PROPERTIES AND NOTHING ELSE. A kind's `define property` rows are
+   * what that kind says its state is; trait properties are a rule's business
+   * — where it is, whether it holds the keyboard, how much health it has. A
+   * project that wants something kept declares it on the kind, which is the
+   * direction this lab already pushes.
+   *
+   * REFERENCES ARE REFUSED. A property holding an actor has nothing to point
+   * at in another run: `loadMap` resolves one in a second pass because both
+   * ends are in the same map, and two runs are not. Storing it would write
+   * something that cannot come back.
+   */
+  rememberActors(actors, name) {
+    if (!this.storage) {
+      return false;
+    }
+    const rows = [...actors].map((actor) => {
+      const fields = {};
+      for (const property of actor.ownProperties()) {
+        if (property.type === "actor" || property.type === "actors") {
+          continue;
+        }
+        fields[property.id] = actor.get(property);
+      }
+      return { kind: actor.type, fields };
+    });
+    try {
+      this.storage.setItem(this.memoryKey(name), JSON.stringify({ rows }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  /**
+   * Make them again — `bring back what was remembered as ⟨"notes"⟩`.
+   *
+   * ANSWERS THE ACTORS, not a count and not a boolean, which is the whole
+   * shape of it. A record has nowhere to be and does not care; anything DRAWN
+   * has to be PUT somewhere, and only the project knows where. Handing the
+   * set back is what lets it say:
+   *
+   *     let row be each actor in ⟨bring back what was remembered as ⟨…⟩⟩
+   *       do set position of row to …
+   *
+   * Nothing is lost by not answering a number. `how many actors in ⟨…⟩` and
+   * `any actors in ⟨…⟩` are blocks the lab already has, so "how many" and
+   * "was there anything saved" are each one block away and neither had to be
+   * built into this.
+   *
+   * NO KIND IS NAMED, because each row carries its own — which is what lets
+   * a mixed set come back as a mixed set. The kinds are found by path in what
+   * the world was TOLD about (`define`), since a path stored in a browser is
+   * one no import could have followed.
+   *
+   * THEY ARE IN THE WORLD when they come back. An actor outside one has no
+   * age and is found by nothing, so a set of unplaced actors would be a value
+   * that leaks the moment a project dropped it. They are added and then
+   * handed over, and a handler that moves them does so before the frame is
+   * drawn.
+   */
+  recallActors(name, layer) {
+    if (!this.storage) {
+      return [];
+    }
+    let raw = null;
+    try {
+      raw = this.storage.getItem(this.memoryKey(name));
+    } catch {
+      return [];
+    }
+    if (raw === null) {
+      return [];
+    }
+    let read;
+    try {
+      read = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+    const held2 = read;
+    if (!Array.isArray(held2.rows)) {
+      return [];
+    }
+    const made = [];
+    for (const row of held2.rows) {
+      const kind = typeof row?.kind === "string" ? row.kind : "";
+      const template = this.types.get(kind);
+      if (!template) {
+        continue;
+      }
+      const actor = this.addActor(template, void 0, kind, layer);
+      const fields = row.fields ?? {};
+      for (const property of actor.ownProperties()) {
+        if (property.id in fields) {
+          actor.set(property, fields[property.id]);
+        }
+      }
+      made.push(actor);
+    }
+    return made;
+  }
+  /** Throw a memory away, so an app that can save can also reset. */
+  forget(name) {
+    if (!this.storage) {
+      return false;
+    }
+    try {
+      this.storage.removeItem(this.memoryKey(name));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  /**
    * How wide `value` would be drawn at `size` pixels, in pixels.
    *
    * ZERO WHEN NOTHING CAN MEASURE, which is the honest answer and not a
@@ -2714,7 +4443,7 @@ var World = class {
    * brackets. A size that is not a positive number measures nothing: there is
    * no text at zero pixels, and a negative one is a typo.
    */
-  textWidth(value, size) {
+  textWidth(value, size, style) {
     if (!this.measure) {
       return 0;
     }
@@ -2723,7 +4452,52 @@ var World = class {
     if (!words || !Number.isFinite(at) || at <= 0) {
       return 0;
     }
-    return this.measure(words, at) || 0;
+    return this.measure(words, at, style?.weight === "bold" ? "bold" : void 0) || 0;
+  }
+  /**
+   * Lend the world a clock — the driver calls this once, at set-up.
+   *
+   * `now` reports SECONDS since the epoch, because everything else in the lab
+   * is in seconds and a learner subtracting two moments should get an answer
+   * in the unit a tween and a cooldown already use.
+   *
+   * `offsetMinutes` is minutes to ADD to UTC to reach the zone being shown —
+   * so New York in winter is -300. That is the sign a person writes, and the
+   * opposite of `Date.getTimezoneOffset`; the driver flips it on the way in.
+   */
+  useClock(now, offsetMinutes = 0) {
+    this.clock = now;
+    this.zoneOffset = offsetMinutes;
+    this.moment = now();
+    return this;
+  }
+  /**
+   * What time it is — `the time now`, in seconds since the epoch.
+   *
+   * ONE VALUE FOR THE WHOLE FRAME (see `moment`). A world nobody lent a clock
+   * answers the same fixed moment every time, which is a visible wrong answer
+   * rather than an invisible one.
+   */
+  now() {
+    return this.moment;
+  }
+  /** The zone the clock is being read in, in minutes from UTC. */
+  timeZoneOffset() {
+    return this.zoneOffset;
+  }
+  /** One part of a moment — `⟨the hour⟩ of ⟨…⟩` (`core/clock`). */
+  timePart(seconds, part) {
+    const at = Number(seconds);
+    return isTimePart(part) && Number.isFinite(at) ? partOf(at, part, this.zoneOffset) : 0;
+  }
+  /** A moment as words — `⟨…⟩ as ⟨a date⟩` (`core/clock`). */
+  timeText(seconds, style) {
+    const at = Number(seconds);
+    if (!Number.isFinite(at)) {
+      return "";
+    }
+    const how = TIME_STYLES.includes(String(style)) ? String(style) : "date";
+    return timeText(at, how, this.zoneOffset);
   }
   /** Whether `key` (a name from `core/keys`) is currently pressed. */
   isKeyDown(key) {
@@ -2736,6 +4510,81 @@ var World = class {
   /** Keys released this tick that were pressed last tick (falling edges). */
   newlyReleasedKeys() {
     return [...this.previousKeys].filter((key) => !this.keys.has(key));
+  }
+  /**
+   * Keys that should fire AGAIN this tick because they are being held.
+   *
+   * The third edge, and the one a keyboard has that a set of held keys does
+   * not describe: hold an arrow and it moves once, pauses, then moves over and
+   * over. A list walked with the arrows and a field emptied with backspace
+   * both want it, and neither could ask for it — `is held` is every frame,
+   * which is forty repeats a second, and `presses` is one.
+   *
+   * NOT the rising edge. A key's first fire is its press, which the Input rule
+   * already raises; this is only the repeats after it, so a rule that wants
+   * both listens to both and one that wants a single shot — a jump — is
+   * untouched.
+   *
+   * THE TIMING IS THE ENGINE'S because the frame clock is. Expressing "0.4
+   * seconds, then every 0.06" in the rule language would need a timer per key
+   * held, and the world already knows when each one went down.
+   */
+  repeatingKeys() {
+    return [...this.repeatingThisTick];
+  }
+  /**
+   * How many repeats a key held for `since` seconds has earned by now.
+   *
+   * Counted from the elapsed time rather than accumulated per frame, so a
+   * frame that ran long fires once rather than dropping the repeat, and a
+   * world ticked in big steps does not spray them.
+   */
+  repeatsDue(since) {
+    const held2 = this.elapsed - since;
+    if (held2 < KEY_REPEAT_DELAY) {
+      return 0;
+    }
+    return Math.floor((held2 - KEY_REPEAT_DELAY) / KEY_REPEAT_INTERVAL) + 1;
+  }
+  /** When each held key went down, in world seconds. Cleared on release. */
+  keyHeldSince = /* @__PURE__ */ new Map();
+  /** Repeats already fired for each held key, so none fires twice. */
+  keyRepeatsFired = /* @__PURE__ */ new Map();
+  /** The keys `repeatingKeys` answers with, worked out once per tick. */
+  repeatingThisTick = /* @__PURE__ */ new Set();
+  /**
+   * Work out which held keys repeat this tick.
+   *
+   * ONCE PER TICK, before the steps run, so that `repeatingKeys` is a pure
+   * read: a step may ask twice in a frame, and two different answers would be
+   * a key that repeated for one reader and not the other.
+   *
+   * A key that went down starts its clock; one that went up forgets it, so
+   * releasing and pressing again waits out the delay afresh rather than
+   * carrying on at speed.
+   */
+  advanceKeyRepeats() {
+    const repeating = /* @__PURE__ */ new Set();
+    for (const key of this.keys) {
+      let since = this.keyHeldSince.get(key);
+      if (since === void 0) {
+        since = this.elapsed;
+        this.keyHeldSince.set(key, since);
+        this.keyRepeatsFired.set(key, 0);
+      }
+      const due = this.repeatsDue(since);
+      if (due > (this.keyRepeatsFired.get(key) ?? 0)) {
+        this.keyRepeatsFired.set(key, due);
+        repeating.add(key);
+      }
+    }
+    for (const key of [...this.keyHeldSince.keys()]) {
+      if (!this.keys.has(key)) {
+        this.keyHeldSince.delete(key);
+        this.keyRepeatsFired.delete(key);
+      }
+    }
+    this.repeatingThisTick = repeating;
   }
   /**
    * Replace the mouse's state — where it is, and which buttons are held.
@@ -2752,6 +4601,39 @@ var World = class {
     this.pointer = new Vector(at.x, at.y);
     this.buttons = new Set(buttons);
   }
+  /**
+   * How far the wheel was turned since the last tick, in PIXELS.
+   *
+   * ACCUMULATED, NOT REPLACED, because a wheel is a sequence and not a state:
+   * the driver may see three notches between two frames, and a frame that read
+   * only the last of them would scroll a third as far as the hand moved. The
+   * keys are a set and the pointer is a place — both answer "how is it now" —
+   * and this is the third kind, like what was typed.
+   *
+   * PIXELS, and the driver's job to make them so. A browser reports its wheel
+   * in pixels, lines or pages depending on the machine, the browser and
+   * whether it is a trackpad; none of that reaches here (`PhaserBinding`).
+   *
+   * Positive is DOWN, which is the direction the content moves under a scroll
+   * down, and is what every scrollable thing in the lab adds to its offset.
+   */
+  scrollWheel(by) {
+    this.pendingWheel += by;
+  }
+  /** What the wheel turned during THIS tick, in pixels. Zero on a still one. */
+  wheelTurned() {
+    return this.wheel;
+  }
+  /**
+   * The wheel turned since the last tick, waiting to be read by the next.
+   *
+   * Two fields for the reason the typed queue has two: the driver adds between
+   * frames, and the step that reads it runs inside one. The pending total
+   * becomes the frame's at the top of `tick` and is zeroed there, so a frame
+   * sees exactly what the hand did to it and a still frame sees nothing.
+   */
+  pendingWheel = 0;
+  wheel = 0;
   /** Whether `button` (a name from `core/pointer`) is currently held. */
   isButtonDown(button) {
     return this.buttons.has(button);
@@ -2784,13 +4666,78 @@ var World = class {
    * coordinate already assume, and the answer a game wants for the layer its
    * actors are on.
    */
-  mousePosition() {
-    const view = this.viewSize();
+  mousePosition(actor) {
+    const subject = actor ?? this.inHand.at(-1);
+    if (subject instanceof Camera && subject.window) {
+      return this.throughWindow(subject.window, subject);
+    }
+    const space = this.spaceOf(subject);
+    const mirror = this.mirrorUnderPointer(space);
+    if (mirror) {
+      return this.throughWindow(mirror.owner, mirror.camera);
+    }
+    if (!space.owner || !space.camera) {
+      return this.rootPointer();
+    }
+    return this.throughWindow(space.owner, space.camera);
+  }
+  /**
+   * Where the pointer is in the scene `camera` looks at, seen through the
+   * rectangle of `viewport`.
+   *
+   * The Viewport branch of `mousePosition`, named, since a mirror and a box
+   * holding a level both want it and differ only in which camera.
+   */
+  throughWindow(viewport, camera) {
+    const position = this.positionalProperty(SPATIAL.position);
+    const at = position ? viewport.get(position) : new Vector(0, 0);
+    const view = this.viewSizeOf(viewport);
+    const outer = this.spaceOf(viewport).owner ? this.mousePosition(viewport) : this.rootPointer();
+    const inside = new Vector(
+      outer.x - (at.x - view.x / 2),
+      outer.y - (at.y - view.y / 2)
+    );
+    return new Vector(
+      camera.position.x - view.x / 2 + inside.x,
+      camera.position.y - view.y / 2 + inside.y
+    );
+  }
+  /** Where the pointer is in the root, through the world's own camera. */
+  rootPointer() {
     const camera = this.activeCamera();
+    const view = this.viewSize(camera);
     return new Vector(
       camera.position.x - view.x / 2 + this.pointer.x,
       camera.position.y - view.y / 2 + this.pointer.y
     );
+  }
+  /**
+   * The topmost mirror OF `target` whose rectangle the pointer is inside.
+   *
+   * Measured in the root, through the world's own camera — a mirror is a
+   * placement in the root like any other (one inside another Viewport's space
+   * is nobody's case yet). Only a mirror, and only of this scene: a box
+   * holding a level of its own has actors of its own, and an actor elsewhere
+   * is never under it in the sense that matters here.
+   */
+  mirrorUnderPointer(target) {
+    const position = this.positionalProperty(SPATIAL.position);
+    if (!position) {
+      return void 0;
+    }
+    const pointer = this.rootPointer();
+    for (let index = this.viewportSpaces.length - 1; index >= 0; index -= 1) {
+      const space = this.viewportSpaces[index];
+      if (space.mirrorOf !== target || !space.owner || !space.camera) {
+        continue;
+      }
+      const at = space.owner.get(position);
+      const box = this.viewSizeOf(space.owner);
+      if (Math.abs(pointer.x - at.x) <= box.x / 2 && Math.abs(pointer.y - at.y) <= box.y / 2) {
+        return space;
+      }
+    }
+    return void 0;
   }
   /**
    * How much an animation's frames are shrunk, by its largest cell.
@@ -2900,6 +4847,46 @@ var World = class {
   animation(id) {
     return this.animationDefs.get(id);
   }
+  /**
+   * Whether input reaches this actor — `⟨…⟩ can be reached`.
+   *
+   * FALSE WHILE SOMETHING MODAL COVERS IT. A screen loaded over another is a
+   * dialog: the one in front takes the clicks, the tabbing and the typing,
+   * and what is behind waits. Every interface anybody has used works this
+   * way, and nothing here said so until an on-screen keyboard's keys started
+   * pressing the button on the screen behind them (specs/MODALITY_PLAN.md).
+   *
+   * MEASURED FROM THE TOPMOST MODAL LOAD, not from the top of the stack, and
+   * that is the whole of the design. A keyboard sits ABOVE the form it fills
+   * and must not lock it out; a dialog sits above a list and must. So a map
+   * says which it is (`WorldMap.modal`), and everything placed by the topmost
+   * modal load OR BY ANYTHING ABOVE IT can be reached.
+   *
+   * AN ACTOR NO MAP PLACED IS BEHIND EVERYTHING. `add actor` in a world's
+   * body, a bullet a handler made: they belong to no load, which puts them
+   * under the bottom one, so a dialog covers them too. That is what a dialog
+   * over a game has to mean.
+   *
+   * THE ROOT SPACE DECIDES FOR EVERYBODY. Screens are the root's stack, and a
+   * level playing inside a Viewport is behind whatever is over the window —
+   * so a modal in the root covers the other spaces whole. A modal loaded
+   * INSIDE a Viewport is not a case anybody has needed and is not answered.
+   */
+  canReach(actor) {
+    const loads = this.rootSpace.loads;
+    let topModal = -1;
+    for (let at = loads.length - 1; at >= 0; at -= 1) {
+      if (loads[at].modal) {
+        topModal = at;
+        break;
+      }
+    }
+    if (topModal < 0) {
+      return true;
+    }
+    const load = this.loadOf.get(actor);
+    return load ? loads.indexOf(load) >= topModal : false;
+  }
   /** The ids of every registered animation (active rules' stock + world extras). */
   animationIds() {
     return [...this.animationDefs.keys()];
@@ -2907,8 +4894,29 @@ var World = class {
   /** Advance the simulation by `delta` seconds. */
   tick(delta) {
     this.inTick = true;
-    this.elapsed += delta;
+    if (!this.paused) {
+      this.elapsed += delta;
+    }
+    if (this.clock) {
+      this.moment = this.clock();
+    }
+    if (this.pendingTyped.length > 0) {
+      this.typed = [...this.pendingTyped, ...this.typed];
+      this.pendingTyped = [];
+    }
+    if (this.pendingKeys.size > 0) {
+      this.keys = /* @__PURE__ */ new Set([...this.held, ...this.pendingKeys]);
+      this.pendingKeys = /* @__PURE__ */ new Set();
+    } else {
+      this.keys = this.held;
+    }
+    this.advanceKeyRepeats();
+    this.wheel = this.pendingWheel;
+    this.pendingWheel = 0;
     try {
+      for (const space of this.viewportSpaces) {
+        this.lendCameraProperties(space);
+      }
       this.scheduler.run(this, delta, this.paused ? whilePaused : void 0);
       this.events.flush(this);
     } finally {
@@ -2918,6 +4926,7 @@ var World = class {
       }
       this.leaving.clear();
     }
+    this.settleSpaces();
     this.previousKeys = this.keys;
     this.previousButtons = this.buttons;
     this.typed = [];
@@ -2928,8 +4937,8 @@ var World = class {
     return this.scheduler.order();
   }
   /** Whether a rule is active (directly or by dependency). */
-  hasRule(rule3) {
-    return this.membership.has(rule3);
+  hasRule(rule6) {
+    return this.membership.has(rule6);
   }
   /** The active rules, directly-used and implied. */
   activeRules() {
@@ -3484,40 +5493,16 @@ var World = class {
         frame: frameFor(actor),
         drawing: drawingFor(actor),
         effects: actor.effects(),
-        layer: this.depthOf(actor.layer ?? DEFAULT_LAYER_ID)
+        layer: this.depthOf(actor.layer ?? DEFAULT_LAYER_ID, actor.space),
+        ...actor.space && actor.space !== this.rootSpace ? { space: actor.space.id } : {}
       });
     }
     return states;
   }
-  /**
-   * Remove every actor (used by `WorldBuilder.clear` and the `clear world` block).
-   *
-   * DEFERRED while a tick is running, exactly as {@link removeActor} is and for
-   * the same reason: clearing the world is something a handler does — "the
-   * player reached the exit, take it all away" — and a handler runs inside the
-   * walk of the very list this empties. Emptying it underneath that walk skips
-   * whatever came next. `WorldBuilder.clear` calls this at setup, where nothing
-   * is ticking and it takes effect at once.
-   */
-  clearActors() {
-    if (this.inTick) {
-      for (const actor of this.actorList) {
-        this.leaving.add(actor);
-      }
-      return;
-    }
-    for (const actor of this.actorList) {
-      actor.world = void 0;
-      actor.layer = void 0;
-    }
-    this.actorList.length = 0;
-    this.actorsById.clear();
-    this.nextOrdinal.clear();
-  }
   /** Set a world-scoped property by its `${ruleId}.${propId}` path. */
   setWorldProperty(path, value) {
-    for (const rule3 of this.membership.items()) {
-      for (const property of Object.values(rule3.properties)) {
+    for (const rule6 of this.membership.items()) {
+      for (const property of Object.values(rule6.properties)) {
         if (`${property.ownerId}.${property.id}` === path) {
           this.set(property, value);
           return true;
@@ -3566,8 +5551,8 @@ var World = class {
   snapshot() {
     const rules = this.membership.items();
     const world = {};
-    for (const rule3 of rules) {
-      for (const property of Object.values(rule3.properties)) {
+    for (const rule6 of rules) {
+      for (const property of Object.values(rule6.properties)) {
         if (property.type === "actors" || property.type === "actor") {
           continue;
         }
@@ -3596,9 +5581,9 @@ var World = class {
       actorTraits[actor.id] = actor.traits().map((trait) => trait.id);
     }
     return {
-      ruleIds: rules.map((rule3) => rule3.id).sort(),
+      ruleIds: rules.map((rule6) => rule6.id).sort(),
       ruleCode: Object.fromEntries(
-        rules.map((rule3) => [rule3.id, ruleContentHash(rule3)])
+        rules.map((rule6) => [rule6.id, ruleContentHash(rule6)])
       ),
       actorIds: this.actorList.map((actor) => actor.id).sort(),
       cameras: this.cameraList.map((camera) => camera.id),
@@ -3730,23 +5715,13 @@ var tweenDisplaced = (displaced) => {
   );
 };
 
-// src/engine/core/watchProperty.ts
-function watchProperty(property, watcher) {
-  const list = property.watch;
-  if (list) {
-    list.push(watcher);
-  } else {
-    property.watch = [watcher];
-  }
-}
-
 // src/engine/rules/spatial.ts
-var rule = new RuleBuilder({
+var rule3 = new RuleBuilder({
   id: SPATIAL.rule,
   name: "Space",
   ability: "Has Space"
 });
-var PositionalTrait = rule.addTrait({
+var PositionalTrait = rule3.addTrait({
   id: SPATIAL.trait,
   name: "Can Be Positioned"
 });
@@ -3786,16 +5761,16 @@ var ParentProperty = PositionalTrait.addProperty(
   [],
   { name: "parent" }
 );
-var GotParentEvent = rule.addEvent(SPATIAL.gotParent, {
+var GotParentEvent = rule3.addEvent(SPATIAL.gotParent, {
   name: "gets a parent"
 });
-var LostParentEvent = rule.addEvent(SPATIAL.lostParent, {
+var LostParentEvent = rule3.addEvent(SPATIAL.lostParent, {
   name: "loses its parent"
 });
-var GainedChildEvent = rule.addEvent(SPATIAL.gainedChild, {
+var GainedChildEvent = rule3.addEvent(SPATIAL.gainedChild, {
   name: "gains a child"
 });
-var LostChildEvent = rule.addEvent(SPATIAL.lostChild, {
+var LostChildEvent = rule3.addEvent(SPATIAL.lostChild, {
   name: "loses a child"
 });
 registerParenting({
@@ -3850,7 +5825,7 @@ function outsideMapAt(actor, at) {
     return false;
   }
   const half = halfExtent(actor);
-  const bounds = world.mapBounds();
+  const bounds = world.mapBounds(actor);
   return at.x + half.x < 0 || at.y + half.y < 0 || at.x - half.x > bounds.x || at.y - half.y > bounds.y;
 }
 function within(value, of, distance) {
@@ -3863,7 +5838,9 @@ function within(value, of, distance) {
       for (const center of centers) {
         for (const near of world.actorsNear(
           center.get(PositionProperty),
-          reach
+          reach,
+          void 0,
+          center
         )) {
           if (!centers.includes(near) && !seen.has(near)) {
             seen.add(near);
@@ -3888,31 +5865,34 @@ var OutsideMapQuery = PositionalTrait.addQuery(
   (actor) => outsideMapAt(actor, actor.get(PositionProperty)),
   { name: "is outside the map", returns: "boolean" }
 );
-var LeftMapEvent = rule.addEvent("leftMap", {
+var LeftMapEvent = rule3.addEvent("leftMap", {
   name: "leaves the map"
 });
-watchProperty(PositionProperty, (actor, previous, next) => {
-  const world = actor.world;
-  if (!world) {
-    return;
+var wasOutside = /* @__PURE__ */ new WeakMap();
+var NoticeLeavingStep = rule3.addStepIn(
+  "noticeLeaving",
+  "react",
+  (world) => {
+    for (const actor of world.actors.with(PositionalTrait)) {
+      const outside = outsideMapAt(actor, actor.get(PositionProperty));
+      const before = wasOutside.get(actor);
+      wasOutside.set(actor, outside);
+      if (outside && before === false) {
+        world.emit(LeftMapEvent, actor);
+      }
+    }
   }
-  if (outsideMapAt(actor, previous) || !outsideMapAt(actor, next)) {
-    return;
-  }
-  if (!world.hasPendingEvent(LeftMapEvent, actor)) {
-    world.emit(LeftMapEvent, actor);
-  }
-});
-var CreatedEvent = rule.addEvent(SPATIAL.created, {
+);
+var CreatedEvent = rule3.addEvent(SPATIAL.created, {
   name: "is created"
 });
-var RemovedEvent = rule.addEvent(SPATIAL.removed, {
+var RemovedEvent = rule3.addEvent(SPATIAL.removed, {
   name: "is removed"
 });
-var TweenFinishedEvent = rule.addEvent("tweenFinished", {
+var TweenFinishedEvent = rule3.addEvent("tweenFinished", {
   name: "a tween finishes"
 });
-var AdvanceTweensStep = rule.addStepIn(
+var AdvanceTweensStep = rule3.addStepIn(
   "advanceTweens",
   "adjust",
   (world, delta) => {
@@ -3926,16 +5906,16 @@ var AdvanceTweensStep = rule.addStepIn(
     }
   }
 );
-var SpatialRule = rule.build();
+var SpatialRule = rule3.build();
 
 // src/engine/rules/animation.ts
-var rule2 = new RuleBuilder({
+var rule4 = new RuleBuilder({
   id: APPEARANCE.rule,
   name: "Appearance",
   ability: "Has Appearance"
 });
-rule2.requires([SpatialRule]);
-var AppearanceTrait = rule2.addTrait({
+rule4.requires([SpatialRule]);
+var AppearanceTrait = rule4.addTrait({
   id: APPEARANCE.trait,
   name: "Has Appearance"
 });
@@ -4000,10 +5980,10 @@ var RestartRequestedProperty = AppearanceTrait.addProperty(
   false,
   { readonly: true }
 );
-var AnimationEndedEvent = rule2.addEvent("animationEnded", {
+var AnimationEndedEvent = rule4.addEvent("animationEnded", {
   name: "animation ends"
 });
-var FrameChangedEvent = rule2.addEvent("frameChanged", {
+var FrameChangedEvent = rule4.addEvent("frameChanged", {
   name: "animation frame changes"
 });
 function publishPictureSize(world, actor) {
@@ -4037,7 +6017,7 @@ function publishIntrinsicSize(actor, def) {
     actor.set(IntrinsicSizeProperty, new Vector(width * fit, height * fit));
   }
 }
-var AdvanceAnimationStep = rule2.addStep(
+var AdvanceAnimationStep = rule4.addStep(
   "advanceAnimation",
   (world, delta) => {
     for (const actor of world.actors.with(AppearanceTrait)) {
@@ -4094,10 +6074,54 @@ function playAnimation(target, id) {
   target.set(AnimationProperty, id);
   target.set(RestartRequestedProperty, true);
 }
-var AnimationRule = rule2.build();
+var AnimationRule = rule4.build();
+
+// src/engine/rules/boxed.ts
+var BOXED = {
+  rule: "boxed",
+  trait: "hasABox",
+  width: "width",
+  height: "height"
+};
+var rule5 = new RuleBuilder({
+  id: BOXED.rule,
+  name: "Boxed",
+  ability: "Has a Box"
+});
+var HasABoxTrait = rule5.addTrait({
+  id: BOXED.trait,
+  name: "Has a Box"
+});
+var WidthProperty = HasABoxTrait.addProperty(
+  BOXED.width,
+  "number",
+  0,
+  {
+    name: "width"
+  }
+);
+var HeightProperty = HasABoxTrait.addProperty(
+  BOXED.height,
+  "number",
+  0,
+  { name: "height" }
+);
+var BoxedRule = rule5.build();
 
 // src/engine/builders/WorldBuilder.ts
-var FOUNDATION_RULES = [SpatialRule, AnimationRule];
+var FOUNDATION_RULES = [
+  SpatialRule,
+  AnimationRule,
+  ViewportRule,
+  // …and a box, which every interface actor has and which a resize handle in
+  // the map editor must be able to ask about without knowing what it is
+  // looking at (specs/BOXES_PLAN.md).
+  BoxedRule,
+  // …and which theme an actor is painted out of, for the same reason: an
+  // inspector cannot ask whether a project imported the rule that lets one
+  // button be the red one (specs/STYLES_PLAN.md).
+  StyledRule
+];
 var WorldBuilder = class {
   id;
   name;
@@ -4108,6 +6132,8 @@ var WorldBuilder = class {
   // the World fills in the default layer either way.
   layers = [];
   types = /* @__PURE__ */ new Map();
+  /** The project's maps by path — see {@link defineMap}. */
+  maps = /* @__PURE__ */ new Map();
   /** State this WORLD carries, without a rule to carry it (specs/WORLD_STATE.md). */
   own = [];
   /**
@@ -4172,13 +6198,13 @@ var WorldBuilder = class {
     return this;
   }
   /** Mark a rule hidden in the simple view (still active at runtime). */
-  hideRule(rule3) {
-    this.hidden.add(rule3);
+  hideRule(rule6) {
+    this.hidden.add(rule6);
     return this;
   }
   /** Whether a rule is marked hidden (for the interface layer). */
-  isHidden(rule3) {
-    return this.hidden.has(rule3);
+  isHidden(rule6) {
+    return this.hidden.has(rule6);
   }
   /**
    * Register animations (typically from imported `.anim` files) by id, in
@@ -4320,8 +6346,8 @@ var WorldBuilder = class {
    * "is anything solid where this door opens" — which is a question about the
    * actors the map just placed.
    */
-  actorsNear(at, radius, only) {
-    return this.getWorld().actorsNear(at, radius, only);
+  actorsNear(at, radius, only, sameSpaceAs) {
+    return this.getWorld().actorsNear(at, radius, only, sameSpaceAs);
   }
   /**
    * Play an effect across the whole viewport. See {@link World.addEffect}.
@@ -4400,16 +6426,32 @@ var WorldBuilder = class {
     return this.getWorld().isPaused();
   }
   /**
-   * The actors a map placed under `name`, and the thing a hat about them
-   * registers on — see {@link World.actorsNamed} and {@link World.named}. On
-   * the builder because a world file says `when ⟨the actor named Resume⟩ is
-   * clicked` at module scope, where `world` is this.
+   * The world's spaces, forwarded (specs/VIEWPORT_PLAN.md): a map registered
+   * by path, a map loaded into a Viewport or taken out of it, and the actor
+   * in hand a generated loop keeps. All of them are said in handlers, where
+   * `world` is the live World, and under `define world`, where it is this.
    */
-  actorsNamed(name) {
-    return this.getWorld().actorsNamed(name);
+  defineMap(path, map) {
+    this.maps.set(path, map);
+    if (this.built) {
+      this.built.defineMap(path, map);
+    }
+    return this;
   }
-  named(name) {
-    return this.getWorld().named(name);
+  loadMapInto(viewport, map, layer) {
+    return this.readyWorld().loadMapInto(viewport, map, layer);
+  }
+  unloadViewport(viewport) {
+    this.getWorld().unloadViewport(viewport);
+  }
+  enter(subject) {
+    this.getWorld().enter(subject);
+  }
+  leave() {
+    this.getWorld().leave();
+  }
+  withActor(subject, fn) {
+    return this.getWorld().withActor(subject, fn);
   }
   /**
    * Play a track. See {@link World.setMusic}.
@@ -4432,6 +6474,26 @@ var WorldBuilder = class {
   /** Draw an image in front of a layer's actors. See {@link World.setForeground}. */
   setForeground(sprite, layer = DEFAULT_LAYER_ID) {
     return this.defer("setForeground", sprite, layer);
+  }
+  /**
+   * Say which theme this world's interface is painted in.
+   *
+   * DEFERRED LIKE THE REST, because `use theme` is a row under `define world`
+   * and a world's body runs against the builder. It is also legal in a
+   * handler, where it runs against the live World — which is how a project
+   * could change theme mid-game if it wanted to, though nothing offers a
+   * reason to yet (specs/STYLES_PLAN.md).
+   */
+  useTheme(document) {
+    return this.defer("useTheme", document);
+  }
+  /** Register a theme by path. See {@link World.defineTheme}. */
+  defineTheme(path, document) {
+    return this.defer("defineTheme", path, document);
+  }
+  /** Register one of the world's own events by name. See {@link World.defineEvent}. */
+  defineEvent(name, event) {
+    return this.defer("defineEvent", name, event);
   }
   /** Set the color behind the backdrop. See {@link World.setBackgroundColor}. */
   setBackgroundColor(color) {
@@ -4597,7 +6659,9 @@ var WorldBuilder = class {
    * reload (worldPreviewWorkerManager, specs/EFFECTS_PLAN.md §13).
    */
   getWorld() {
-    this.built ??= this.instantiate();
+    if (!this.built) {
+      this.built = this.instantiate();
+    }
     return this.built;
   }
   /**
@@ -4621,31 +6685,44 @@ var WorldBuilder = class {
     return this.getWorld().removeActor(actor);
   }
   /**
-   * Remove every actor. See {@link World.clearActors}.
-   *
-   * Named as the World names it, because one block calls whichever it lands on:
-   * `clear world` generates `world.clearActors()` under `define world` and in a
-   * handler alike. It reads as a strange thing to do while describing a world
-   * until you want a second map to REPLACE the first rather than stack on it,
-   * which is what `loadMap`'s note points at.
-   */
-  clearActors() {
-    this.getWorld().clearActors();
-  }
-  /**
    * Place the actors a Map describes. See {@link World.loadMap}.
    *
-   * Deferred like `clear world`'s, and for the same reason: one block calls
-   * whichever object it lands on. What this adds is the REGISTRY — a builder's
+   * Named as the World names it, because one block calls whichever object it
+   * lands on: `load map` means the same under `define world` and in a handler. What this adds is the REGISTRY — a builder's
    * `define` records templates before there is a world to record them in, so
    * they are handed over here, on the way past.
    */
   loadMap(map, layer) {
+    return this.readyWorld().loadMap(map, layer);
+  }
+  /** …and one named by its path, which a description may also say. */
+  loadMapNamed(path, layer) {
+    return this.readyWorld().loadMapNamed(path, layer);
+  }
+  /**
+   * …and taking the newest one back, which a description may also say.
+   *
+   * Here for the same reason `loadMap` is: the block means the same thing in
+   * a handler as it does under `define world` (`domainBlocks.worldLoadMap`),
+   * and a surface that carried one and not the other would make the pair mean
+   * two different things depending on where it was written.
+   */
+  unloadNewestMap() {
+    return this.readyWorld().unloadNewestMap();
+  }
+  /**
+   * The world, with every template and map this builder was told about
+   * handed over — what any load needs first.
+   */
+  readyWorld() {
     const world = this.getWorld();
     for (const [type, builder] of this.types) {
       world.define(type, builder);
     }
-    return world.loadMap(map, layer);
+    for (const [path, map] of this.maps) {
+      world.defineMap(path, map);
+    }
+    return world;
   }
   /**
    * The rules this world runs under: what it asked for, over the foundation.
@@ -4664,9 +6741,9 @@ var WorldBuilder = class {
    * built-in one it shadows.
    */
   rulesInPlay() {
-    const claimed = new Set(this.rules.map((rule3) => rule3.id));
+    const claimed = new Set(this.rules.map((rule6) => rule6.id));
     return [
-      ...FOUNDATION_RULES.filter((rule3) => !claimed.has(rule3.id)),
+      ...FOUNDATION_RULES.filter((rule6) => !claimed.has(rule6.id)),
       ...this.rules
     ];
   }
@@ -4727,6 +6804,12 @@ var WorldBuilder = class {
       layers: this.layers.map((layer) => ({ ...layer })),
       ownProperties: this.own
     });
+    for (const [type, builder] of this.types) {
+      world.define(type, builder);
+    }
+    for (const [path, map] of this.maps) {
+      world.defineMap(path, map);
+    }
     for (const call of this.log) {
       apply(world, call);
     }
@@ -4762,6 +6845,13 @@ var Actor = class _Actor {
    * question about layers have two answers (core/Layer).
    */
   layer;
+  /**
+   * The coordinate space this actor's position is in, set when it is
+   * placed (`World.place`) and taken from the parent when one is set: a
+   * child sits in its parent's frame, so it is in its parent's space
+   * (specs/VIEWPORT_PLAN.md). Undefined until placed.
+   */
+  space;
   /**
    * The world's clock when this actor was placed — the zero its age counts from.
    *
@@ -4881,6 +6971,9 @@ var Actor = class _Actor {
     if (parent?.layer !== void 0) {
       this.layer = parent.layer;
     }
+    if (parent?.space) {
+      this.space = parent.space;
+    }
     const { events } = keys2;
     const raise = this.world;
     if (raise) {
@@ -4898,13 +6991,15 @@ var Actor = class _Actor {
   /**
    * Set a property's value; returns `this` so instance setup can chain.
    *
-   * A watched property (`watchProperty`) is read back after the write and the
-   * watchers told what changed. Read BACK rather than passing `value` on,
-   * because `Traited.set` coerces and a watcher comparing the two must be
-   * comparing stored values or it will see changes that did not happen.
+   * Two things happen here and nowhere else, both about PARENTING: setting the
+   * `parent` property is the door a `set parent of` block comes through, and a
+   * world transform written to a child is converted into the parent's frame
+   * first. Everything else goes straight to the store.
    *
-   * Unwatched — which is every property but one, and the case this is on the
-   * hot path for — costs one field read.
+   * NOTHING OBSERVES THE WRITE. There was a hook here once — a property could
+   * carry watchers, called with the value before and after — and one rule used
+   * it to notice an actor leaving the map. A step does that now
+   * (`rules/spatial`), and the hook is gone: a write is a write.
    */
   set(property, value) {
     const keys2 = parentingKeys();
@@ -4928,19 +7023,9 @@ var Actor = class _Actor {
     }
     return this.store(property, value);
   }
-  /** The write itself: coerce, store, and tell the watchers. */
+  /** The write itself: coerce and store. */
   store(property, value) {
-    const watchers = property.watch;
-    if (!watchers) {
-      this.traited.set(property, value);
-      return this;
-    }
-    const previous = this.traited.get(property);
     this.traited.set(property, value);
-    const next = this.traited.get(property);
-    for (const watcher of watchers) {
-      watcher(this, previous, next);
-    }
     return this;
   }
   /** Whether this actor has the given trait (directly or by dependency). */
@@ -5172,16 +7257,63 @@ var ActorBuilder = class {
   handlers = [];
   effects = [];
   steps = [];
-  /** Handlers about OTHER actors, by placement name — see {@link named}. */
-  namedHandlers = [];
   drawing;
   constructor(opts) {
     this.id = opts.id;
     this.name = opts.name;
   }
+  /**
+   * `is data` — a kind that is a RECORD and not a thing in the world.
+   *
+   * WHAT IT SUPPRESSES is the seeding below: an actor with no positional
+   * trait is not drawn, is not in the spatial index, is not hit-tested, and
+   * is walked by no step that asks for positioned actors. That was the
+   * ordinary behaviour once, and was taken away ON PURPOSE — a forgotten
+   * `use trait` row gave an actor that existed and could not be seen, which
+   * reads as a bug rather than as a decision.
+   *
+   * So it comes back as a DECLARATION rather than as an omission. Forgetting
+   * a row still gives a normal actor; only saying this gives one with no
+   * place (specs/RECORDS_PLAN.md).
+   *
+   * EVERYTHING ELSE IS UNCHANGED. It has its own properties, it has an age,
+   * it raises and hears events, it runs its own steps, and it is in
+   * `all actors` — which is how a project finds its records at all. It is a
+   * live object; it is not a LOCATED one.
+   */
+  isData() {
+    this.data = true;
+    return this;
+  }
+  /** Whether this kind is a record rather than a thing on the screen. */
+  get isRecord() {
+    return this.data;
+  }
+  data = false;
   useTraits(traits) {
     this.traits = [...this.traits, ...traits];
     return this;
+  }
+  /**
+   * Elect camera traits, for a kind that shows a map: they go to the
+   * Viewport's own main camera (specs/SPACE_CAMERAS_PLAN.md, "simplifying").
+   *
+   * The actor HOLDS them too, so it has their property slots — `actor to
+   * follow` is then a field in the placement inspector and a `set` on the
+   * Viewport — and the world copies those values onto the camera each tick
+   * (`World.settleSpaces`). What generates this is a `use trait` naming a
+   * camera trait under `define actor`, which the palette offers only to a kind
+   * that `Shows a Map`.
+   */
+  useCameraTraits(traits) {
+    this.traits = [...this.traits, ...traits];
+    this.cameraTraitList = [...this.cameraTraitList, ...traits];
+    return this;
+  }
+  cameraTraitList = [];
+  /** The camera traits this kind elected, for its Viewport's main camera. */
+  get cameraTraits() {
+    return this.cameraTraitList;
   }
   /**
    * Named to match `Actor.addTrait` / `Actor.removeTrait`, and for the reason
@@ -5230,9 +7362,10 @@ var ActorBuilder = class {
    */
   actsLike(other) {
     this.traits = [...this.traits, ...other.traits];
+    this.cameraTraitList = [...this.cameraTraitList, ...other.cameraTraits];
+    this.data = this.data || other.data;
     this.overrides.push(...other.overrides);
     this.handlers.push(...other.handlers);
-    this.namedHandlers.push(...other.namedHandlers);
     this.steps.push(...other.steps);
     for (const effect of other.effects) {
       this.addEffect(effect.path, effect.document, effect.values);
@@ -5403,29 +7536,6 @@ var ActorBuilder = class {
     return this;
   }
   /**
-   * Respond to an event raised for ANOTHER actor, the one a map places under
-   * `name` — `when ⟨the actor named Resume⟩ is clicked`, written in a Pause
-   * Menu's file about the Button beside it.
-   *
-   * An actor file has no world at module scope to register on, so the
-   * handler is kept here and registered by the world the first time it
-   * places an actor of this kind (`World.useActorKind`), through
-   * `World.named`, which reaches the named actor whenever it arrives. Once
-   * per world and not per instance: two menus would otherwise answer one
-   * click twice.
-   */
-  named(name) {
-    return {
-      on: (event, handler) => {
-        this.namedHandlers.push([name, event, handler]);
-      }
-    };
-  }
-  /** The handlers about named actors this kind declared, for the World. */
-  get ownNamedHandlers() {
-    return this.namedHandlers;
-  }
-  /**
    * Play an effect on this actor's image (specs/EFFECT_EDITOR.md).
    *
    * Sits beside `useTraits` rather than being one, because an effect is not
@@ -5470,7 +7580,8 @@ var ActorBuilder = class {
       id: instanceId ?? this.id,
       type: type ?? this.id,
       name: this.name,
-      traits: [...FOUNDATION_TRAITS, ...this.traits],
+      // The foundation, unless this kind said it has no place (`isData`).
+      traits: this.data ? [...this.traits] : [...FOUNDATION_TRAITS, ...this.traits],
       overrides: [...this.overrides],
       handlers: [...this.handlers],
       effects: [...this.effects]
@@ -5564,6 +7675,7 @@ function parseAnimationFile(raw) {
   return out;
 }
 export {
+  ANCHORS,
   Actor,
   ActorBuilder,
   AdvanceAnimationStep,
@@ -5572,6 +7684,8 @@ export {
   AnimationProperty,
   AnimationRule,
   AppearanceTrait,
+  BOXED,
+  BoxedRule,
   CreatedEvent,
   DEFAULT_BACKDROP_COLOR,
   DEFAULT_FRAME_DELAY,
@@ -5582,42 +7696,66 @@ export {
   FrameProperty,
   GainedChildEvent,
   GotParentEvent,
+  HasABoxTrait,
+  HasAStyleTrait,
+  HeightProperty,
   IntrinsicSizeProperty,
   LazyActors,
   LeftMapEvent,
   LostChildEvent,
   LostParentEvent,
+  MapLoad,
   MoveAction,
+  NO_THEME,
+  NoticeLeavingStep,
   OpacityProperty,
   OutsideMapQuery,
   PIXELS_PER_UNIT,
   ParentProperty,
   PositionProperty,
   PositionalTrait,
+  ROOT_SPACE_ID,
   RemovedEvent,
   ResizeAction,
   RotateAction,
   RotationProperty,
   RuleBuilder,
   STOP_ALL_SOUNDS,
+  STYLED,
   ScaleAction,
   ScaleProperty,
   Scheduler,
   SkewProperty,
+  Space,
   SpatialRule,
   SpriteCellOriginProperty,
   SpriteCellSizeProperty,
   SpriteProperty,
+  StyledRule,
   TEXT_ANCHORS,
+  ThemeProperty,
   Trait,
   TweenFinishedEvent,
+  VIEWPORT,
   Vector,
+  ViewportContentProperty,
+  ViewportMapProperty,
+  ViewportMirrorsProperty,
+  ViewportMirrorsTheWorldProperty,
+  ViewportRule,
+  ViewportScrollProperty,
+  ViewportShowsMapEvent,
+  ViewportShowsThroughProperty,
+  ViewportTrait,
+  WidthProperty,
   World,
   WorldBuilder,
   addTo,
   addToFront,
   advanceTween,
   all,
+  anchorPoint,
+  anchored,
   anyOf,
   beginTween,
   compose,
@@ -5627,6 +7765,8 @@ export {
   firstOf,
   firstWhere,
   frameDelay,
+  inThisSpace,
+  isAnchor,
   isSameActor,
   isTweenable,
   itemOf,
@@ -5638,6 +7778,7 @@ export {
   parseAnimationFile,
   playAnimation,
   pushed,
+  resolveTheme,
   rgb,
   rgba,
   takeFirst,
@@ -5648,5 +7789,6 @@ export {
   tweenDisplaced,
   tweenValue,
   within,
+  without,
   worldTransformOf
 };
